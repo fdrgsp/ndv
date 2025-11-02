@@ -634,6 +634,68 @@ class NGFFZarrWrapper(DataWrapper[Any]):
         # Store the array as _data for compatibility with DataWrapper
         super().__init__(self._array)
 
+    @classmethod
+    def supports(cls, obj: Any) -> TypeGuard[Any]:
+        """Return True if this wrapper can handle the given object.
+
+        Supports:
+        - yaozarrs.ZarrGroup objects
+        - zarr.Group objects
+        - String/path to zarr stores (with valid NGFF metadata)
+        """
+        import os
+
+        try:
+            import yaozarrs
+        except ImportError:
+            warnings.warn(
+                "yaozarrs is not installed; NGFFZarrWrapper cannot be used.",
+                stacklevel=2,
+            )
+            return False
+
+        # Check for string/path
+        if isinstance(obj, (str, os.PathLike)):
+            if not str(obj).endswith(".zarr"):
+                return False
+            try:
+                # First validate the store
+                yaozarrs.validate_zarr_store(obj)
+                # Then check for OME metadata
+                group = yaozarrs.open_group(obj)
+                return group.ome_metadata() is not None
+            except Exception:
+                return False
+
+        # Check for yaozarrs.ZarrGroup
+        if isinstance(obj, yaozarrs._zarr.ZarrGroup):
+            # Check if it has OME metadata
+            try:
+                return obj.ome_metadata() is not None
+            except Exception:
+                return False
+
+        # Check for zarr.Group
+        try:
+            import zarr
+        except ImportError:
+            return False
+
+        if isinstance(obj, zarr.Group):
+            try:
+                # zarr v3 uses store.root, v2 uses store.path
+                store_path = getattr(
+                    obj.store, "root", getattr(obj.store, "path", None)
+                )
+                if store_path is None:
+                    return False
+                group = yaozarrs.open_group(store_path)
+                return group.ome_metadata() is not None
+            except Exception:
+                return False
+
+        return False
+
     def _setup_from_metadata(self) -> None:
         """Setup axes and array based on the OME metadata type."""
         # Check if it's a Plate (HCS) dataset
@@ -841,14 +903,45 @@ class NGFFZarrWrapper(DataWrapper[Any]):
             raise ValueError("No multiscales found in image metadata")
 
         multiscale = image_metadata.multiscales[0]
-        self._axes = [axis.name for axis in multiscale.axes]
 
-        # Get the first (highest resolution) dataset
+        # Get all datasets
         if not multiscale.datasets:
             raise ValueError("No datasets found in multiscale metadata")
 
+        # Check if multiple datasets have the same shape (multi-position case)
+        # vs different shapes (multi-resolution case)
+        if len(multiscale.datasets) > 1:
+            # Get shapes of all datasets
+            shapes = []
+            for ds in multiscale.datasets:
+                arr = image_group[ds.path]
+                if hasattr(arr, "_metadata") and hasattr(arr._metadata, "shape"):
+                    shapes.append(arr._metadata.shape)
+                else:
+                    shapes.append(None)
+
+            # If all shapes are the same (and not None), treat as multi-position
+            if shapes and all(s == shapes[0] and s is not None for s in shapes):
+                # Multi-position case: collect all datasets as positions
+                self._position_arrays = []
+                self._position_info = []
+
+                for ds in multiscale.datasets:
+                    arr = image_group[ds.path]
+                    self._position_arrays.append(arr)
+                    self._position_info.append(("", ds.path))
+
+                # Get axes from metadata
+                image_axes = [axis.name for axis in multiscale.axes]
+
+                # Add position dimension at the beginning
+                self._axes = ["p", *image_axes]
+                self._array = None  # We handle this specially in isel()
+                return
+
+        # Single position or multi-resolution case: use first dataset
+        self._axes = [axis.name for axis in multiscale.axes]
         self._dataset_path = multiscale.datasets[0].path
-        # Access the array
         self._array = image_group[self._dataset_path]
 
     @property
@@ -991,68 +1084,6 @@ class NGFFZarrWrapper(DataWrapper[Any]):
                     "pip install tensorstore"
                 )
                 raise ImportError(msg) from e
-
-    @classmethod
-    def supports(cls, obj: Any) -> TypeGuard[Any]:
-        """Return True if this wrapper can handle the given object.
-
-        Supports:
-        - yaozarrs.ZarrGroup objects
-        - zarr.Group objects
-        - String/path to zarr stores (with valid NGFF metadata)
-        """
-        import os
-
-        try:
-            import yaozarrs
-        except ImportError:
-            warnings.warn(
-                "yaozarrs is not installed; NGFFZarrWrapper cannot be used.",
-                stacklevel=2,
-            )
-            return False
-
-        # Check for string/path
-        if isinstance(obj, (str, os.PathLike)):
-            if not str(obj).endswith(".zarr"):
-                return False
-            try:
-                # First validate the store
-                yaozarrs.validate_zarr_store(obj)
-                # Then check for OME metadata
-                group = yaozarrs.open_group(obj)
-                return group.ome_metadata() is not None
-            except Exception:
-                return False
-
-        # Check for yaozarrs.ZarrGroup
-        if isinstance(obj, yaozarrs._zarr.ZarrGroup):
-            # Check if it has OME metadata
-            try:
-                return obj.ome_metadata() is not None
-            except Exception:
-                return False
-
-        # Check for zarr.Group
-        try:
-            import zarr
-        except ImportError:
-            return False
-
-        if isinstance(obj, zarr.Group):
-            try:
-                # zarr v3 uses store.root, v2 uses store.path
-                store_path = getattr(
-                    obj.store, "root", getattr(obj.store, "path", None)
-                )
-                if store_path is None:
-                    return False
-                group = yaozarrs.open_group(store_path)
-                return group.ome_metadata() is not None
-            except Exception:
-                return False
-
-        return False
 
     def save_as_zarr(self, path: str) -> None:
         """Save the NGFF-Zarr data to a new location.

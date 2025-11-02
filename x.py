@@ -1,6 +1,6 @@
 from rich import print
 from yaozarrs import open_group, validate_ome_object, validate_zarr_store
-
+import zarr
 import ndv
 
 # path = "/Users/fdrgsp/Desktop/acqz_hcs_zarr_example.ome.zarr"
@@ -18,13 +18,13 @@ print(z.ome_metadata())
 ndv.imshow(z)
 
 # open with zarr
-# z1 = zarr.open_group(path, mode="r")
-# print('INFO', z1.info)
-# print(type(z1))
-# ndv.imshow(z1)
+z1 = zarr.open_group(path, mode="r")
+print('INFO', z1.info)
+print(type(z1))
+ndv.imshow(z1)
 
 # open from path
-# ndv.imshow(path)
+ndv.imshow(path)
 
 # import tifffile
 # p = "/Users/fdrgsp/Desktop/hcs_multi_ome_tiff/hcs_p000.ome.tiff"

@@ -19,8 +19,12 @@ from psygnal import Signal
 from ._ring_buffer import RingBuffer
 
 if TYPE_CHECKING:
+    from collections.abc import Hashable, Mapping
+
+    from typing_extensions import TypeGuard
+if TYPE_CHECKING:
     from collections.abc import Container, Iterator
-    from typing import Any, Union
+    from typing import Union
 
     import dask.array.core as da
     import numpy.typing as npt
@@ -564,3 +568,506 @@ class RingBufferWrapper(DataWrapper[RingBuffer]):
     def popleft(self) -> np.ndarray:
         """Pop a value from the left end of the buffer."""
         return self._ring.popleft()
+
+
+class NGFFZarrWrapper(DataWrapper[Any]):
+    """Wrapper for NGFF-Zarr (OME-Zarr) objects.
+
+    Supports yaozarrs.ZarrGroup, zarr.Group, and string paths to zarr stores.
+    All inputs are converted to yaozarrs.ZarrGroup for consistent handling.
+
+    Handles both Image and Plate (HCS) datasets by navigating to the first
+    available image array.
+    """
+
+    PRIORITY = 40  # Higher priority than generic array-like
+
+    def __init__(self, data: Any) -> None:
+        """Initialize the wrapper with NGFF-Zarr data.
+
+        Parameters
+        ----------
+        data : yaozarrs.ZarrGroup | zarr.Group | str | os.PathLike
+            The NGFF-Zarr data to wrap. Can be:
+            - A yaozarrs.ZarrGroup
+            - A zarr.Group (will be converted to yaozarrs.ZarrGroup)
+            - A string/path to a zarr store (will be opened with yaozarrs)
+        """
+        import os
+
+        try:
+            import yaozarrs as yaz
+        except ImportError as e:
+            raise ImportError(
+                "yaozarrs is required to use NGFFZarrWrapper. "
+                "Please install it via 'pip install yaozarrs'."
+            ) from e
+
+        # Convert all inputs to yaozarrs.ZarrGroup
+        if isinstance(data, (str, os.PathLike)):
+            self._zarr_group = yaz.open_group(data)
+        elif isinstance(data, yaz._zarr.ZarrGroup):
+            # Already a yaozarrs.ZarrGroup
+            self._zarr_group = data
+        elif hasattr(data, "store") and hasattr(data, "info"):
+            # Handle zarr.Group by opening with yaozarrs using store path
+            # zarr v3 uses store.root, v2 uses store.path
+            store_path = getattr(data.store, "root", getattr(data.store, "path", None))
+            if store_path is None:
+                raise ValueError("Could not determine zarr store path")
+            self._zarr_group = yaz.open_group(store_path)
+        else:
+            raise ValueError(
+                f"Unsupported data type: {type(data)}. Expected yaozarrs.ZarrGroup, "
+                "zarr.Group, or str/PathLike"
+            )
+
+        # Get the OME metadata
+        self._ome_metadata = self._zarr_group.ome_metadata()
+
+        if self._ome_metadata is None:
+            raise ValueError("No OME metadata found in zarr group")
+
+        # Navigate to the image based on metadata type
+        self._setup_from_metadata()
+
+        # Store the array as _data for compatibility with DataWrapper
+        super().__init__(self._array)
+
+    def _setup_from_metadata(self) -> None:
+        """Setup axes and array based on the OME metadata type."""
+        # Check if it's a Plate (HCS) dataset
+        if hasattr(self._ome_metadata, "plate"):
+            self._setup_from_plate()
+        # Check if it's a Well dataset
+        elif hasattr(self._ome_metadata, "well"):
+            self._setup_from_well()
+        # Check if this is an Image at the root, but has a Plate one level down
+        # (common NGFF HCS structure: root/plate_name/wells/...)
+        elif hasattr(self._ome_metadata, "multiscales"):
+            # Check if any child groups have plate metadata
+            plate_group = self._find_plate_in_children()
+            if plate_group is not None:
+                # Use the plate group instead
+                self._zarr_group = plate_group
+                self._ome_metadata = plate_group.ome_metadata()
+                self._setup_from_plate()
+            else:
+                # Regular image
+                self._setup_from_image(self._zarr_group)
+        else:
+            raise ValueError(
+                f"Unsupported OME metadata type: {type(self._ome_metadata).__name__}"
+            )
+
+    def _find_plate_in_children(self) -> Any:
+        """Check if any child groups contain plate metadata.
+
+        Returns the first child group with plate metadata, or None.
+        """
+        from urllib.parse import unquote
+
+        from yaozarrs._zarr import ZarrGroup
+
+        try:
+            # Get children from the group
+            # yaozarrs doesn't have a direct way to list children, so we'll
+            # try to access the store to get child names
+            if hasattr(self._zarr_group, "store_path"):
+                import os
+
+                store_path = self._zarr_group.store_path
+                # Handle file:// URI
+                if store_path.startswith("file://"):
+                    store_path = unquote(store_path[7:])
+
+                if os.path.isdir(store_path):
+                    # List directories (potential child groups)
+                    children = [
+                        d
+                        for d in os.listdir(store_path)
+                        if os.path.isdir(os.path.join(store_path, d))
+                        and not d.startswith(".")
+                    ]
+
+                    # Check each child for plate metadata
+                    for child_name in children:
+                        try:
+                            child_group = self._zarr_group[child_name]
+                            if isinstance(child_group, ZarrGroup):
+                                child_meta = child_group.ome_metadata()
+                                if hasattr(child_meta, "plate"):
+                                    return child_group
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+
+        return None
+
+    def _setup_from_plate(self) -> None:
+        """Setup from Plate (HCS) dataset: collect all wells/fields as positions."""
+        from yaozarrs._zarr import ZarrArray, ZarrGroup
+
+        plate = self._ome_metadata.plate
+        if not plate.wells:
+            raise ValueError("Plate metadata has no wells")
+
+        # Collect all field arrays across all wells
+        self._position_arrays = []
+        self._position_info = []  # Store (well_path, field_path) for debugging
+
+        for well_info in plate.wells:
+            well_node = self._zarr_group[well_info.path]
+            if not isinstance(well_node, ZarrGroup):
+                continue
+
+            well_metadata = well_node.ome_metadata()
+            if not hasattr(well_metadata, "well") or not well_metadata.well.images:
+                continue
+
+            # Get all fields in this well
+            for field_info in well_metadata.well.images:
+                field_node = well_node[field_info.path]
+
+                # The field can be either a ZarrArray directly or a ZarrGroup
+                if isinstance(field_node, ZarrArray):
+                    # Direct array case
+                    self._position_arrays.append(field_node)
+                    self._position_info.append((well_info.path, field_info.path))
+                elif isinstance(field_node, ZarrGroup):
+                    # Group with multiscales case
+                    field_metadata = field_node.ome_metadata()
+                    if not hasattr(field_metadata, "multiscales"):
+                        continue
+
+                    multiscale = field_metadata.multiscales[0]
+                    dataset_path = multiscale.datasets[0].path
+                    array = field_node[dataset_path]
+
+                    self._position_arrays.append(array)
+                    self._position_info.append((well_info.path, field_info.path))
+
+        if not self._position_arrays:
+            raise ValueError("No valid field arrays found in plate")
+
+        # Get axes - need to determine from the first array's metadata
+        first_array = self._position_arrays[0]
+        if hasattr(first_array, "_metadata") and hasattr(
+            first_array._metadata, "dimension_names"
+        ):
+            image_axes = list(first_array._metadata.dimension_names)
+        else:
+            # Fallback: assume standard NGFF axes based on shape
+            shape = (
+                first_array._metadata.shape
+                if hasattr(first_array, "_metadata")
+                else (1, 1, 512, 512)
+            )
+            ndim = len(shape)
+            # Common pattern: t, c, z, y, x (depending on ndim)
+            if ndim == 5:
+                image_axes = ["t", "c", "z", "y", "x"]
+            elif ndim == 4:
+                image_axes = ["t", "c", "y", "x"]
+            elif ndim == 3:
+                image_axes = ["c", "y", "x"]
+            elif ndim == 2:
+                image_axes = ["y", "x"]
+            else:
+                image_axes = [f"d{i}" for i in range(ndim)]
+
+        # Add position dimension at the beginning
+        self._axes = ["p", *image_axes]
+        self._array = None  # We handle this specially in isel()
+
+    def _setup_from_well(self) -> None:
+        """Setup from Well dataset: collect all fields as positions."""
+        from yaozarrs._zarr import ZarrGroup
+
+        well = self._ome_metadata.well
+        if not well.images:
+            raise ValueError("Well metadata has no images")
+
+        # Collect all field arrays
+        self._position_arrays = []
+        self._position_info = []
+
+        for field_info in well.images:
+            field_node = self._zarr_group[field_info.path]
+            if not isinstance(field_node, ZarrGroup):
+                continue
+
+            # Get the array from this field
+            field_metadata = field_node.ome_metadata()
+            if not hasattr(field_metadata, "multiscales"):
+                continue
+
+            multiscale = field_metadata.multiscales[0]
+            dataset_path = multiscale.datasets[0].path
+            array = field_node[dataset_path]
+
+            self._position_arrays.append(array)
+            self._position_info.append(("", field_info.path))
+
+        if not self._position_arrays:
+            raise ValueError("No valid field arrays found in well")
+
+        # Get axes from the first field
+        first_field_group = self._zarr_group[self._position_info[0][1]]
+        first_field_meta = first_field_group.ome_metadata()
+        multiscale = first_field_meta.multiscales[0]
+        image_axes = [axis.name for axis in multiscale.axes]
+
+        # Add position dimension at the beginning
+        self._axes = ["p", *image_axes]
+        self._array = None  # We handle this specially in isel()
+
+    def _setup_from_image(self, image_group: Any) -> None:
+        """Setup axes and array from an Image group.
+
+        Parameters
+        ----------
+        image_group : yaozarrs.ZarrGroup
+            The zarr group containing image metadata
+        """
+        # Get image metadata
+        image_metadata = image_group.ome_metadata()
+        if not hasattr(image_metadata, "multiscales"):
+            raise ValueError("Image metadata has no multiscales")
+
+        # Extract axes and dataset information from the first multiscale
+        if not image_metadata.multiscales:
+            raise ValueError("No multiscales found in image metadata")
+
+        multiscale = image_metadata.multiscales[0]
+        self._axes = [axis.name for axis in multiscale.axes]
+
+        # Get the first (highest resolution) dataset
+        if not multiscale.datasets:
+            raise ValueError("No datasets found in multiscale metadata")
+
+        self._dataset_path = multiscale.datasets[0].path
+        # Access the array
+        self._array = image_group[self._dataset_path]
+
+    @property
+    def dims(self) -> tuple[Hashable, ...]:
+        """Return the dimension labels for the data."""
+        return tuple(self._axes)
+
+    @property
+    def coords(self) -> Mapping[Hashable, Sequence]:
+        """Return the coordinates for the data."""
+        # Handle HCS datasets with multiple positions
+        if hasattr(self, "_position_arrays") and self._position_arrays:
+            # Get shape from first position array
+            first_array = self._position_arrays[0]
+            if hasattr(first_array, "_metadata") and hasattr(
+                first_array._metadata, "shape"
+            ):
+                shape = first_array._metadata.shape
+            else:
+                raise ValueError("Could not determine array shape")
+
+            # Build coords with position dimension first
+            coords = {"p": range(len(self._position_arrays))}
+            coords.update(
+                {axis: range(size) for axis, size in zip(self._axes[1:], shape)}
+            )
+            return coords
+
+        # Single image case
+        if hasattr(self._array, "_metadata") and hasattr(
+            self._array._metadata, "shape"
+        ):
+            shape = self._array._metadata.shape
+        else:
+            raise ValueError("Could not determine array shape")
+
+        return {axis: range(size) for axis, size in zip(self._axes, shape)}
+
+    @property
+    def dtype(self) -> np.dtype:
+        """Return the dtype for the data."""
+        if hasattr(self._array, "dtype"):
+            return np.dtype(self._array.dtype)
+        raise ValueError("Could not determine array dtype")
+
+    def isel(self, index: Mapping[int, int | slice]) -> np.ndarray:
+        """Return a slice of the data as a numpy array.
+
+        Parameters
+        ----------
+        index : Mapping[int, int | slice]
+            Mapping of axis indices to slice/index values
+        """
+        # Handle HCS datasets with multiple positions
+        if hasattr(self, "_position_arrays") and self._position_arrays:
+            # Extract position index (dimension 0)
+            pos_idx = index.get(0, 0)
+
+            # Handle slicing across positions
+            if isinstance(pos_idx, slice):
+                # Determine which positions to include
+                num_positions = len(self._position_arrays)
+                positions = range(num_positions)[pos_idx]
+
+                if not positions:
+                    # Empty slice
+                    return np.array([])
+
+                # Build index for the remaining dimensions (shift by 1)
+                image_index = {k - 1: v for k, v in index.items() if k > 0}
+
+                # Collect data from each position
+                slices = []
+                for p in positions:
+                    array = self._position_arrays[p]
+                    try:
+                        zarr_array = array.to_zarr_python()
+                        idx = tuple(
+                            image_index.get(k, slice(None))
+                            for k in range(len(self._axes) - 1)
+                        )
+                        slices.append(np.asarray(zarr_array[idx]))
+                    except ImportError:
+                        ts_array = array.to_tensorstore()
+                        idx = tuple(
+                            image_index.get(k, slice(None))
+                            for k in range(len(self._axes) - 1)
+                        )
+                        result = ts_array[idx].read().result()
+                        slices.append(np.asarray(result))
+
+                # Stack along first axis
+                return np.stack(slices, axis=0)
+
+            # Get the array for this position
+            array = self._position_arrays[pos_idx]
+
+            # Build index for the remaining dimensions (shift by 1)
+            image_index = {k - 1: v for k, v in index.items() if k > 0}
+
+            # Access the data from this position's array
+            try:
+                zarr_array = array.to_zarr_python()
+                idx = tuple(
+                    image_index.get(k, slice(None)) for k in range(len(self._axes) - 1)
+                )
+                return np.asarray(zarr_array[idx])
+            except ImportError:
+                try:
+                    ts_array = array.to_tensorstore()
+                    idx = tuple(
+                        image_index.get(k, slice(None))
+                        for k in range(len(self._axes) - 1)
+                    )
+                    result = ts_array[idx].read().result()
+                    return np.asarray(result)
+                except ImportError as e:
+                    msg = (
+                        "Either 'zarr' or 'tensorstore' package is required "
+                        "for data access. Install with: pip install zarr or "
+                        "pip install tensorstore"
+                    )
+                    raise ImportError(msg) from e
+
+        # Single image case
+        try:
+            zarr_array = self._array.to_zarr_python()
+            idx = tuple(index.get(k, slice(None)) for k in range(len(self._axes)))
+            return np.asarray(zarr_array[idx])
+        except ImportError:
+            try:
+                ts_array = self._array.to_tensorstore()
+                idx = tuple(index.get(k, slice(None)) for k in range(len(self._axes)))
+                result = ts_array[idx].read().result()
+                return np.asarray(result)
+            except ImportError as e:
+                msg = (
+                    "Either 'zarr' or 'tensorstore' package is required "
+                    "for data access. Install with: pip install zarr or "
+                    "pip install tensorstore"
+                )
+                raise ImportError(msg) from e
+
+    @classmethod
+    def supports(cls, obj: Any) -> TypeGuard[Any]:
+        """Return True if this wrapper can handle the given object.
+
+        Supports:
+        - yaozarrs.ZarrGroup objects
+        - zarr.Group objects
+        - String/path to zarr stores (with valid NGFF metadata)
+        """
+        import os
+
+        try:
+            import yaozarrs
+        except ImportError:
+            warnings.warn(
+                "yaozarrs is not installed; NGFFZarrWrapper cannot be used.",
+                stacklevel=2,
+            )
+            return False
+
+        # Check for string/path
+        if isinstance(obj, (str, os.PathLike)):
+            if not str(obj).endswith(".zarr"):
+                return False
+            try:
+                # First validate the store
+                yaozarrs.validate_zarr_store(obj)
+                # Then check for OME metadata
+                group = yaozarrs.open_group(obj)
+                return group.ome_metadata() is not None
+            except Exception:
+                return False
+
+        # Check for yaozarrs.ZarrGroup
+        if isinstance(obj, yaozarrs._zarr.ZarrGroup):
+            # Check if it has OME metadata
+            try:
+                return obj.ome_metadata() is not None
+            except Exception:
+                return False
+
+        # Check for zarr.Group
+        try:
+            import zarr
+        except ImportError:
+            return False
+
+        if isinstance(obj, zarr.Group):
+            try:
+                # zarr v3 uses store.root, v2 uses store.path
+                store_path = getattr(
+                    obj.store, "root", getattr(obj.store, "path", None)
+                )
+                if store_path is None:
+                    return False
+                group = yaozarrs.open_group(store_path)
+                return group.ome_metadata() is not None
+            except Exception:
+                return False
+
+        return False
+
+    def save_as_zarr(self, path: str) -> None:
+        """Save the NGFF-Zarr data to a new location.
+
+        Note: This creates a copy of the entire zarr store.
+        """
+        import shutil
+        from pathlib import Path
+
+        # Get the source path from the zarr group
+        source_path = self._zarr_group.store_path
+        dest_path = Path(path)
+
+        if dest_path.exists():
+            raise FileExistsError(f"Destination path already exists: {path}")
+
+        # Copy the entire zarr store
+        shutil.copytree(source_path, dest_path)

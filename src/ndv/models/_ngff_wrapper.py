@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import Hashable, Mapping, Sequence
     from typing import TypeGuard
 
-    from yaozarrs import ZarrGroup, v04, v05
+    from yaozarrs import ZarrArray, ZarrGroup, v04, v05
 
 logger = logging.getLogger(__name__)
 
@@ -85,24 +85,12 @@ class NGFFWrapper(DataWrapper["ZarrGroup"]):
 
     @classmethod
     def supports(cls, obj: Any) -> TypeGuard[ZarrGroup]:
-        """Check if object is an OME-Zarr store or path.
-
-        Parameters
-        ----------
-        obj : Any
-            Object to check.
-
-        Returns
-        -------
-        bool
-            True if obj is a yaozarrs.ZarrGroup or path to an OME-Zarr store.
-        """
+        """Check if object is an OME-Zarr store or path."""
         # Check if it's a ZarrGroup with OME metadata
         try:
             from yaozarrs._zarr import ZarrGroup
 
             if isinstance(obj, ZarrGroup):
-                # Check if it has OME metadata
                 try:
                     return obj.ome_metadata() is not None
                 except Exception:
@@ -118,8 +106,7 @@ class NGFFWrapper(DataWrapper["ZarrGroup"]):
             try:
                 import yaozarrs
 
-                group = yaozarrs.open_group(obj)
-                return group.ome_metadata() is not None
+                return yaozarrs.open_group(obj).ome_metadata() is not None
             except Exception:
                 return False
 
@@ -141,19 +128,12 @@ class NGFFWrapper(DataWrapper["ZarrGroup"]):
         if self._first_array_path is None:
             raise ValueError("No array path available")
 
-        if not self._is_multiposition:
-            array_node = self._zarr_group[self._first_array_path]
-        else:
-            # Navigate through position
+        if self._is_multiposition:
             pos_path, _ = self._positions[0]
-            pos_group = self._zarr_group[pos_path]
             array_path = self._first_array_path.replace(f"{pos_path}/", "")
-            array_node = pos_group[array_path]
-
-        from yaozarrs._zarr import ZarrArray
-
-        if not isinstance(array_node, ZarrArray):
-            raise ValueError("Expected ZarrArray")
+            array_node = self._get_zarr_array(array_path, self._zarr_group[pos_path])
+        else:
+            array_node = self._get_zarr_array(self._first_array_path)
 
         return np.dtype(array_node.dtype)  # type: ignore[no-any-return]
 
@@ -173,6 +153,59 @@ class NGFFWrapper(DataWrapper["ZarrGroup"]):
         if not self._is_multiposition:
             return self._isel_single(indexers)
         return self._isel_multiposition(indexers)
+
+    def _get_zarr_array(self, path: str, parent: ZarrGroup | None = None) -> ZarrArray:
+        """Get and validate a ZarrArray at the given path.
+
+        Parameters
+        ----------
+        path : str
+            Path to the array within the group.
+        parent : ZarrGroup, optional
+            Parent group to search in. Defaults to self._zarr_group.
+
+        Returns
+        -------
+        ZarrArray
+            The validated zarr array.
+
+        Raises
+        ------
+        ValueError
+            If path doesn't exist or isn't a ZarrArray.
+        """
+        from yaozarrs._zarr import ZarrArray as ZArray
+
+        group = parent if parent is not None else self._zarr_group
+        if path not in group:
+            raise ValueError(f"Path {path} not found in group")
+        node = group[path]
+        if not isinstance(node, ZArray):
+            raise ValueError(f"Expected ZarrArray at {path}")
+        return node
+
+    def _get_first_multiscale(self, metadata: Any) -> v04.Multiscale | v05.Multiscale:
+        """Extract the first multiscale from metadata, validating its existence."""
+        if not hasattr(metadata, "multiscales") or not metadata.multiscales:
+            raise ValueError("No multiscales found in metadata")
+        multiscale = metadata.multiscales[0]
+        if not multiscale.datasets:
+            raise ValueError("No datasets found in multiscale")
+        return multiscale
+
+    def _get_array_shape(self, array_node: ZarrArray, path: str) -> tuple[int, ...]:
+        """Get array shape, raising if unavailable."""
+        if (shape := array_node.metadata.shape) is None:
+            raise ValueError(f"Array at {path} has no shape")
+        return tuple(shape)
+
+    def _extract_dims(
+        self, multiscale: v04.Multiscale | v05.Multiscale, ndim: int
+    ) -> tuple[Hashable, ...]:
+        """Extract dimension names from multiscale axes or generate numbered dims."""
+        if hasattr(multiscale, "axes") and multiscale.axes:
+            return tuple(axis.name for axis in multiscale.axes)
+        return tuple(range(ndim))
 
     def _detect_structure(self) -> None:
         """Detect NGFF structure and dispatch to appropriate parser."""
@@ -289,38 +322,14 @@ class NGFFWrapper(DataWrapper["ZarrGroup"]):
         logger.debug("Parsing single-position image")
         self._is_multiposition = False
 
-        # Use first multiscale, first resolution
-        if not hasattr(self._metadata, "multiscales") or not self._metadata.multiscales:
-            raise ValueError("No multiscales found in image")
-
-        multiscale = self._metadata.multiscales[0]
-        if not multiscale.datasets:
-            raise ValueError("No datasets found in multiscale")
-
+        multiscale = self._get_first_multiscale(self._metadata)
         dataset_path = multiscale.datasets[0].path
         self._first_array_path = dataset_path
 
-        # Get array and validate
-        if dataset_path not in self._zarr_group:
-            raise ValueError(f"Dataset path {dataset_path} not found")
+        array_node = self._get_zarr_array(dataset_path)
+        shape = self._get_array_shape(array_node, dataset_path)
 
-        from yaozarrs._zarr import ZarrArray
-
-        array_node = self._zarr_group[dataset_path]
-        if not isinstance(array_node, ZarrArray):
-            raise ValueError(f"Expected ZarrArray at {dataset_path}")
-
-        # Build dims from axes or fallback to numbered
-        self._dims = (
-            tuple(axis.name for axis in multiscale.axes)
-            if hasattr(multiscale, "axes")
-            else tuple(range(len(array_node.metadata.shape)))
-        )
-
-        # Build coords from shape
-        if (shape := array_node.metadata.shape) is None:
-            raise ValueError(f"Array at {dataset_path} has no shape")
-
+        self._dims = self._extract_dims(multiscale, len(shape))
         self._coords = {dim: range(size) for dim, size in zip(self._dims, shape)}
 
     def _load_first_position_metadata(self) -> None:
@@ -329,15 +338,10 @@ class NGFFWrapper(DataWrapper["ZarrGroup"]):
             raise ValueError("No positions to load metadata from")
 
         first_pos_path, res_idx = self._positions[0]
-
-        # Navigate to position and get metadata
         pos_group = self._zarr_group[first_pos_path]
         pos_metadata = pos_group.ome_metadata()
 
-        if not hasattr(pos_metadata, "multiscales") or not pos_metadata.multiscales:
-            raise ValueError(f"Position {first_pos_path} has no multiscales")
-
-        multiscale = pos_metadata.multiscales[0]
+        multiscale = self._get_first_multiscale(pos_metadata)
         if res_idx >= len(multiscale.datasets):
             raise ValueError(
                 f"Resolution index {res_idx} out of range for position {first_pos_path}"
@@ -347,25 +351,11 @@ class NGFFWrapper(DataWrapper["ZarrGroup"]):
         full_array_path = f"{first_pos_path}/{dataset_path}"
         self._first_array_path = full_array_path
 
-        # Get array and validate
-        from yaozarrs._zarr import ZarrArray
+        array_node = self._get_zarr_array(dataset_path, pos_group)
+        shape = self._get_array_shape(array_node, full_array_path)
 
-        array_node = pos_group[dataset_path]
-        if not isinstance(array_node, ZarrArray):
-            raise ValueError(f"Expected ZarrArray at {full_array_path}")
-
-        if (shape := array_node.metadata.shape) is None:
-            raise ValueError(f"Array at {full_array_path} has no shape")
-
-        # Build dims with "p" as first dimension
-        inner_dims = (
-            tuple(axis.name for axis in multiscale.axes)
-            if hasattr(multiscale, "axes")
-            else tuple(range(len(shape)))
-        )
+        inner_dims = self._extract_dims(multiscale, len(shape))
         self._dims = ("p", *inner_dims)
-
-        # Build coords
         self._coords = {
             "p": range(len(self._positions)),
             **{dim: range(size) for dim, size in zip(inner_dims, shape)},
@@ -376,51 +366,19 @@ class NGFFWrapper(DataWrapper["ZarrGroup"]):
         if self._first_array_path is None:
             raise ValueError("No array path available")
 
-        from yaozarrs._zarr import ZarrArray
-
-        array_node = self._zarr_group[self._first_array_path]
-        if not isinstance(array_node, ZarrArray):
-            raise ValueError(f"Expected ZarrArray at {self._first_array_path}")
-
+        array_node = self._get_zarr_array(self._first_array_path)
         idx_tuple = tuple(indexers.get(i, slice(None)) for i in range(len(self._dims)))
         return self._read_array_data(array_node, idx_tuple)
 
     def _isel_multiposition(self, indexers: Mapping[int, int | slice]) -> np.ndarray:
         """Select data for multi-position images."""
-        pos_idx = indexers.get(0)  # position is always dimension 0
-        keep_pos_dim = False
-
-        # Handle position index
-        if pos_idx is None:
-            pos_idx = 0
-        elif isinstance(pos_idx, slice):
-            pos_idx = pos_idx.start if pos_idx.start is not None else 0
-            keep_pos_dim = True  # slice means preserve singleton dimension
-
-        if not isinstance(pos_idx, int):
-            raise ValueError("Position index must be an integer")
-
-        if not 0 <= pos_idx < len(self._positions):
-            raise IndexError(
-                f"Position index {pos_idx} out of range [0, {len(self._positions)})"
-            )
-
+        pos_idx, keep_pos_dim = self._resolve_position_index(indexers.get(0))
         pos_path, res_idx = self._positions[pos_idx]
 
-        # Navigate to position and get dataset
         pos_group = self._zarr_group[pos_path]
-        pos_metadata = pos_group.ome_metadata()
-
-        if not hasattr(pos_metadata, "multiscales") or not pos_metadata.multiscales:
-            raise ValueError(f"Position {pos_path} has no multiscales")
-
-        dataset_path = pos_metadata.multiscales[0].datasets[res_idx].path
-
-        from yaozarrs._zarr import ZarrArray
-
-        array_node = pos_group[dataset_path]
-        if not isinstance(array_node, ZarrArray):
-            raise ValueError(f"Expected ZarrArray at {pos_path}/{dataset_path}")
+        multiscale = self._get_first_multiscale(pos_group.ome_metadata())
+        dataset_path = multiscale.datasets[res_idx].path
+        array_node = self._get_zarr_array(dataset_path, pos_group)
 
         # Build index tuple for inner dimensions (skip position dimension)
         inner_indexers = {
@@ -433,12 +391,32 @@ class NGFFWrapper(DataWrapper["ZarrGroup"]):
         data = self._read_array_data(array_node, idx_tuple)
         return data[np.newaxis, ...] if keep_pos_dim else data
 
-    def _read_array_data(self, array_node: Any, idx_tuple: tuple) -> np.ndarray:
-        """Read array data using tensorstore or zarr-python."""
+    def _resolve_position_index(self, pos_idx: int | slice | None) -> tuple[int, bool]:
+        """Resolve position index and determine if dimension should be kept.
+
+        Returns
+        -------
+        tuple[int, bool]
+            (resolved_index, keep_dimension_flag)
+        """
+        keep_pos_dim = False
+        if pos_idx is None:
+            pos_idx = 0
+        elif isinstance(pos_idx, slice):
+            pos_idx = pos_idx.start if pos_idx.start is not None else 0
+            keep_pos_dim = True
+
+        if not isinstance(pos_idx, int):
+            raise ValueError("Position index must be an integer")
+        if not 0 <= pos_idx < len(self._positions):
+            raise IndexError(
+                f"Position index {pos_idx} out of range [0, {len(self._positions)})"
+            )
+        return pos_idx, keep_pos_dim
+
+    def _read_array_data(self, array_node: ZarrArray, idx_tuple: tuple) -> np.ndarray:
+        """Read array data using tensorstore or zarr-python fallback."""
         try:
-            # Try tensorstore first (better performance)
             return np.asarray(array_node.to_tensorstore()[idx_tuple].read().result())
         except ImportError:
-            # Fall back to zarr-python (v3)
             return np.asarray(array_node.to_zarr_python()[idx_tuple])
-

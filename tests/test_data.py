@@ -31,13 +31,13 @@ def test_ngff_single_position_custom_shape(tmp_path):
     from ndv.data import ngff_single_position
 
     path = str(tmp_path / "test_custom_shape.ome.zarr")
-    shape = (5, 3, 2, 128, 128)
+    shape = {"t": 5, "c": 3, "z": 2, "y": 128, "x": 128}
     ngff_single_position(path, shape=shape)
 
     # Verify data shape
     group = yaozarrs.open_group(path)
     arr = group["0"].to_zarr_python()
-    assert arr.shape == shape
+    assert arr.shape == (5, 3, 2, 128, 128)
 
 
 def test_ngff_single_position_custom_dtype(tmp_path):
@@ -83,8 +83,9 @@ def test_ngff_single_position_reproducible_data(tmp_path):
     path1 = str(tmp_path / "test1.ome.zarr")
     path2 = str(tmp_path / "test2.ome.zarr")
 
-    ngff_single_position(path1, shape=(2, 2, 2, 32, 32))
-    ngff_single_position(path2, shape=(2, 2, 2, 32, 32))
+    shape = {"t": 2, "c": 2, "z": 2, "y": 32, "x": 32}
+    ngff_single_position(path1, shape=shape)
+    ngff_single_position(path2, shape=shape)
 
     data1 = zarr.open(path1 + "/0", mode="r")[:]
     data2 = zarr.open(path2 + "/0", mode="r")[:]
@@ -147,13 +148,13 @@ def test_ngff_multi_position_shape(tmp_path):
     from ndv.data import ngff_multi_position
 
     path = str(tmp_path / "test_multi_shape.ome.zarr")
-    shape = (3, 2, 64, 64)
+    shape = {"t": 3, "c": 2, "y": 64, "x": 64}
     ngff_multi_position(path, n_positions=2, shape=shape)
 
     # Verify shape
     group = yaozarrs.open_group(path)
     arr = group["0"]["0"].to_zarr_python()
-    assert arr.shape == shape
+    assert arr.shape == (3, 2, 64, 64)
 
 
 def test_ngff_multi_position_dtype(tmp_path):
@@ -171,12 +172,12 @@ def test_ngff_multi_position_dtype(tmp_path):
 
 
 def test_ngff_multi_position_axes(tmp_path):
-    """Test that axes are correctly defined (t, c, y, x) for each position."""
+    """Test that axes are correctly defined for each position."""
     yaozarrs = pytest.importorskip("yaozarrs")
     from ndv.data import ngff_multi_position
 
     path = str(tmp_path / "test_multi_axes.ome.zarr")
-    ngff_multi_position(path)
+    ngff_multi_position(path)  # Default shape includes t, c, z, y, x
 
     group = yaozarrs.open_group(path)
     pos_group = group["0"]
@@ -186,8 +187,8 @@ def test_ngff_multi_position_axes(tmp_path):
     axis_names = [ax.name for ax in multiscale.axes]
     axis_types = [ax.type for ax in multiscale.axes]
 
-    assert axis_names == ["t", "c", "y", "x"]
-    assert axis_types == ["time", "channel", "space", "space"]
+    assert axis_names == ["t", "c", "z", "y", "x"]
+    assert axis_types == ["time", "channel", "space", "space", "space"]
 
 
 def test_ngff_multi_position_reproducible_data(tmp_path):
@@ -200,8 +201,9 @@ def test_ngff_multi_position_reproducible_data(tmp_path):
     path1 = str(tmp_path / "test1.ome.zarr")
     path2 = str(tmp_path / "test2.ome.zarr")
 
-    ngff_multi_position(path1, n_positions=2, shape=(2, 2, 32, 32))
-    ngff_multi_position(path2, n_positions=2, shape=(2, 2, 32, 32))
+    shape = {"t": 2, "c": 2, "y": 32, "x": 32}
+    ngff_multi_position(path1, n_positions=2, shape=shape)
+    ngff_multi_position(path2, n_positions=2, shape=shape)
 
     # Verify data in position 0 is the same
     data1_pos0 = zarr.open(path1 + "/0/0", mode="r")[:]
@@ -310,13 +312,13 @@ def test_ngff_plate_shape(tmp_path):
     from ndv.data import ngff_plate
 
     path = str(tmp_path / "test_plate_shape.ome.zarr")
-    shape = (3, 4, 128, 128)
+    shape = {"c": 3, "z": 4, "y": 128, "x": 128}
     ngff_plate(path, n_rows=1, n_cols=1, n_fovs=1, shape=shape)
 
     # Verify shape
     group = yaozarrs.open_group(path)
     arr = group["A"]["1"]["0"]["0"].to_zarr_python()
-    assert arr.shape == shape
+    assert arr.shape == (3, 4, 128, 128)
 
 
 def test_ngff_plate_dtype(tmp_path):
@@ -334,12 +336,12 @@ def test_ngff_plate_dtype(tmp_path):
 
 
 def test_ngff_plate_axes(tmp_path):
-    """Test that axes are correctly defined (c, z, y, x) for each FOV."""
+    """Test that axes are correctly defined for each FOV."""
     yaozarrs = pytest.importorskip("yaozarrs")
     from ndv.data import ngff_plate
 
     path = str(tmp_path / "test_plate_axes.ome.zarr")
-    ngff_plate(path)
+    ngff_plate(path)  # Default shape includes t, c, z, y, x
 
     group = yaozarrs.open_group(path)
     fov_group = group["A"]["1"]["0"]
@@ -349,8 +351,8 @@ def test_ngff_plate_axes(tmp_path):
     axis_names = [ax.name for ax in multiscale.axes]
     axis_types = [ax.type for ax in multiscale.axes]
 
-    assert axis_names == ["c", "z", "y", "x"]
-    assert axis_types == ["channel", "space", "space", "space"]
+    assert axis_names == ["t", "c", "z", "y", "x"]
+    assert axis_types == ["time", "channel", "space", "space", "space"]
 
 
 def test_ngff_plate_reproducible_data(tmp_path):
@@ -363,8 +365,9 @@ def test_ngff_plate_reproducible_data(tmp_path):
     path1 = str(tmp_path / "test1.ome.zarr")
     path2 = str(tmp_path / "test2.ome.zarr")
 
-    ngff_plate(path1, n_rows=2, n_cols=2, n_fovs=1, shape=(2, 2, 32, 32))
-    ngff_plate(path2, n_rows=2, n_cols=2, n_fovs=1, shape=(2, 2, 32, 32))
+    shape = {"c": 2, "z": 2, "y": 32, "x": 32}
+    ngff_plate(path1, n_rows=2, n_cols=2, n_fovs=1, shape=shape)
+    ngff_plate(path2, n_rows=2, n_cols=2, n_fovs=1, shape=shape)
 
     # Verify data in well A/1/0 is the same
     data1 = zarr.open(path1 + "/A/1/0/0", mode="r")[:]
@@ -447,10 +450,10 @@ def test_ngff_overwrite_behavior(tmp_path):
     path = str(tmp_path / "test_overwrite.ome.zarr")
 
     # Create first file
-    ngff_single_position(path, shape=(2, 2, 2, 32, 32))
+    ngff_single_position(path, shape={"t": 2, "c": 2, "z": 2, "y": 32, "x": 32})
 
     # Create again (should succeed due to overwrite=True)
-    ngff_single_position(path, shape=(3, 3, 3, 64, 64))
+    ngff_single_position(path, shape={"t": 3, "c": 3, "z": 3, "y": 64, "x": 64})
 
     # Verify new shape
     import zarr

@@ -63,19 +63,25 @@ def temp_ngff_files(tmp_path):
 
     files = {}
 
-    # Single position
+    # Single position (t, c, z, y, x)
     sp_path = str(tmp_path / "test_single.ome.zarr")
-    ndv.data.ngff_single_position(sp_path, shape=(2, 2, 3, 32, 32))
+    ndv.data.ngff_single_position(
+        sp_path, shape={"t": 2, "c": 2, "z": 3, "y": 32, "x": 32}
+    )
     files["single"] = sp_path
 
-    # Multi-position
+    # Multi-position (p, t, c, y, x) - without z for this test
     mp_path = str(tmp_path / "test_multipos.ome.zarr")
-    ndv.data.ngff_multi_position(mp_path, n_positions=4, shape=(2, 2, 32, 32))
+    ndv.data.ngff_multi_position(
+        mp_path, n_positions=4, shape={"t": 2, "c": 2, "y": 32, "x": 32}
+    )
     files["multi"] = mp_path
 
-    # Plate
+    # Plate (p, c, z, y, x) - without t for this test
     pl_path = str(tmp_path / "test_plate.ome.zarr")
-    ndv.data.ngff_plate(pl_path, n_rows=2, n_cols=3, n_fovs=2)
+    ndv.data.ngff_plate(
+        pl_path, n_rows=2, n_cols=3, n_fovs=2, shape={"c": 2, "z": 3, "y": 64, "x": 64}
+    )
     files["plate"] = pl_path
 
     return files

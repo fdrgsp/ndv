@@ -1,7 +1,5 @@
 from rich import print
-
 from yaozarrs import open_group, validate_ome_object
-from yaozarrs import open_group, validate_ome_object, validate_zarr_store
 
 import ndv
 

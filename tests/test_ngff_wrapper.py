@@ -1,8 +1,8 @@
-
 import pytest
-from tests._utils import ngff_multi_position, ngff_plate, ngff_single_position
 
 from ndv.models._ngff_wrapper import NGFFWrapper
+
+from ._utils import ngff_multi_position, ngff_plate, ngff_single_position
 
 pytest.importorskip("yaozarrs", reason="yaozarrs is required for NGFFWrapper tests")
 
@@ -12,8 +12,7 @@ def single_position(tmp_path_factory):
     """Create a single-position OME-Zarr file."""
     path = tmp_path_factory.mktemp("ngff") / "single.ome.zarr"
     return ngff_single_position(
-        str(path),
-        shape={"t": 2, "c": 2, "z": 4, "y": 32, "x": 32}
+        str(path), shape={"t": 2, "c": 2, "z": 4, "y": 32, "x": 32}
     )
 
 
@@ -22,9 +21,7 @@ def multi_position(tmp_path_factory):
     """Create a multi-position OME-Zarr file."""
     path = tmp_path_factory.mktemp("ngff") / "multi.ome.zarr"
     return ngff_multi_position(
-        str(path),
-        n_positions=3,
-        shape={"t": 2, "c": 2, "z": 4, "y": 32, "x": 32}
+        str(path), n_positions=3, shape={"t": 2, "c": 2, "z": 4, "y": 32, "x": 32}
     )
 
 
@@ -37,7 +34,7 @@ def plate(tmp_path_factory):
         n_rows=2,
         n_cols=2,
         n_fovs=2,
-        shape={"t": 2, "c": 2, "z": 4, "y": 32, "x": 32}
+        shape={"t": 2, "c": 2, "z": 4, "y": 32, "x": 32},
     )
 
 
@@ -46,8 +43,8 @@ def test_ngff_wrapper_single_position(single_position):
     wrapper = NGFFWrapper(single_position)
 
     # Check dimensions
-    assert wrapper.dims == ('t', 'c', 'z', 'y', 'x')
-    assert wrapper.sizes() == {'t': 2, 'c': 2, 'z': 4, 'y': 32, 'x': 32}
+    assert wrapper.dims == ("t", "c", "z", "y", "x")
+    assert wrapper.sizes() == {"t": 2, "c": 2, "z": 4, "y": 32, "x": 32}
     assert wrapper.dtype.name == "uint16"
 
     # # Check channel axis detection

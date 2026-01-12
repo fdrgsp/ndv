@@ -667,13 +667,8 @@ class NGFFWrapper(DataWrapper):
             raise ValueError("No datasets found in multiscale")
         return multiscale
 
-    def _get_array_shape(self, array_node: Any, path: str) -> tuple[int, ...]:
-        if (shape := array_node.metadata.shape) is None:
-            raise ValueError(f"Array at {path} has no shape")
-        return tuple(shape)
-
     def _extract_dims(self, multiscale: Any, ndim: int) -> tuple[Hashable, ...]:
-        """Get array shape, raising if unavailable."""
+        """Extract dimension names from multiscale axes, or use integer indices."""
         if hasattr(multiscale, "axes") and multiscale.axes:
             return tuple(axis.name for axis in multiscale.axes)
         return tuple(range(ndim))
@@ -688,7 +683,11 @@ class NGFFWrapper(DataWrapper):
         elif isinstance(metadata, (v04.Well, v05.Well)):
             self._parse_well()
         elif hasattr(metadata, "multiscales") and metadata.multiscales:
-            if self._has_bioformats2raw_layout():
+            attrs = self._zarr_group.attrs
+            has_bf2raw = "bioformats2raw.layout" in attrs or (
+                "ome" in attrs and "bioformats2raw.layout" in attrs["ome"]
+            )
+            if has_bf2raw:
                 self._parse_bioformats2raw()
             else:
                 self._parse_single_image()
@@ -699,12 +698,6 @@ class NGFFWrapper(DataWrapper):
             self._parse_bioformats2raw()
         else:
             raise ValueError(f"Unknown NGFF structure: {self._zarr_group.store_path}")
-
-    def _has_bioformats2raw_layout(self) -> bool:
-        attrs = self._zarr_group.attrs
-        return "bioformats2raw.layout" in attrs or (
-            "ome" in attrs and "bioformats2raw.layout" in attrs["ome"]
-        )
 
     def _parse_plate(self) -> None:
         from typing import cast
@@ -767,7 +760,7 @@ class NGFFWrapper(DataWrapper):
         dataset_path = multiscale.datasets[0].path
         self._first_array_path = dataset_path
         array_node = self._get_zarr_array(dataset_path)
-        shape = self._get_array_shape(array_node, dataset_path)
+        shape = tuple(array_node.metadata.shape)
         self._dims = self._extract_dims(multiscale, len(shape))
         self._coords = {dim: range(size) for dim, size in zip(self._dims, shape)}
 
@@ -781,10 +774,9 @@ class NGFFWrapper(DataWrapper):
         if res_idx >= len(multiscale.datasets):
             raise ValueError(f"Resolution index {res_idx} out of range")
         dataset_path = multiscale.datasets[res_idx].path
-        full_array_path = f"{first_pos_path}/{dataset_path}"
-        self._first_array_path = full_array_path
+        self._first_array_path = f"{first_pos_path}/{dataset_path}"
         array_node = self._get_zarr_array(dataset_path, pos_group)
-        shape = self._get_array_shape(array_node, full_array_path)
+        shape = tuple(array_node.metadata.shape)
         inner_dims = self._extract_dims(multiscale, len(shape))
         self._dims = ("p", *inner_dims)
         self._coords = {
@@ -800,7 +792,17 @@ class NGFFWrapper(DataWrapper):
         return self._read_array_data(array_node, idx_tuple)
 
     def _isel_multiposition(self, indexers: Mapping[int, int | slice]) -> np.ndarray:
-        pos_idx, keep_pos_dim = self._resolve_position_index(indexers.get(0))
+        # Resolve position index
+        pos_idx = indexers.get(0)
+        keep_pos_dim = False
+        if pos_idx is None:
+            pos_idx = 0
+        elif isinstance(pos_idx, slice):
+            pos_idx = pos_idx.start if pos_idx.start is not None else 0
+            keep_pos_dim = True
+        if not 0 <= pos_idx < len(self._positions):
+            raise IndexError(f"Position index {pos_idx} out of range")
+
         pos_path, res_idx = self._positions[pos_idx]
         pos_group = self._zarr_group[pos_path]
         multiscale = self._get_first_multiscale(pos_group.ome_metadata())
@@ -814,20 +816,6 @@ class NGFFWrapper(DataWrapper):
         )
         data = self._read_array_data(array_node, idx_tuple)
         return data[np.newaxis, ...] if keep_pos_dim else data
-
-    def _resolve_position_index(self, pos_idx: int | slice | None) -> tuple[int, bool]:
-        """Resolve position index and determine if dimension should be kept."""
-        keep_pos_dim = False
-        if pos_idx is None:
-            pos_idx = 0
-        elif isinstance(pos_idx, slice):
-            pos_idx = pos_idx.start if pos_idx.start is not None else 0
-            keep_pos_dim = True
-        if not isinstance(pos_idx, int):
-            raise ValueError("Position index must be an integer")
-        if not 0 <= pos_idx < len(self._positions):
-            raise IndexError(f"Position index {pos_idx} out of range")
-        return pos_idx, keep_pos_dim
 
     def _read_array_data(self, array_node: Any, idx_tuple: tuple) -> np.ndarray:
         try:

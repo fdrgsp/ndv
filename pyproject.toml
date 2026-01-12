@@ -254,7 +254,7 @@ omit = ["src/ndv/viewer/_backends/_protocols.py"]
 ignore = [".pre-commit-config.yaml", ".ruff_cache/**/*", "tests/**/*"]
 
 [tool.typos.default]
-extend-ignore-identifiers-re = ["(?i)nd2?.*", "(?i)ome", ".*ser_schema"]
+extend-ignore-identifiers-re = ["(?i)nd2?.*", "(?i)ome", ".*ser_schema", "(?i)fov"]
 
 [tool.typos.files]
 extend-exclude = ["**/*.ipynb"]

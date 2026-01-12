@@ -5,6 +5,11 @@
 # ///
 from __future__ import annotations
 
+try:
+    import yaozarrs  # noqa: F401
+except ImportError:
+    raise ImportError("Please install ndv[ngff] to run this example")
+
 import ndv
 
 SOURCE = "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.5"

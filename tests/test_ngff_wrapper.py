@@ -1,6 +1,6 @@
 import pytest
 
-from ndv.models._ngff_wrapper import NGFFWrapper
+from ndv.models._data_wrapper import NGFFWrapper
 
 from ._utils import ngff_multi_position, ngff_plate, ngff_single_position
 

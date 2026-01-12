@@ -15,13 +15,13 @@ jobs:
   check-manifest:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - run: pipx run check-manifest
 
   pyright:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
@@ -84,7 +84,7 @@ jobs:
             python-version: "3.13"
             gui: pyqt
             canvas: pygfx
-          - os: macos-13
+          - os: macos-15
             gui: wxpython
             python-version: "3.9"
             canvas: vispy
@@ -94,7 +94,7 @@ jobs:
             canvas: pygfx
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
         with:
@@ -146,7 +146,7 @@ jobs:
         run: make test extras="${{ matrix.gui }},${{ matrix.canvas }}" min=1 verbose=1
 
       - name: Upload coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: covreport-${{ matrix.os }}-py${{ matrix.python-version }}-${{ matrix.gui }}-${{ matrix.canvas }}
           path: ./.coverage*
@@ -163,7 +163,7 @@ jobs:
         python-version: ["3.10", "3.12"]
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
         with:
@@ -185,7 +185,7 @@ jobs:
         run: make test extras="pyqt,pygfx" groups="array-libs" cov=1 verbose=1
 
       - name: Upload coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: covreport-py${{ matrix.python-version }}-array-libs
           path: ./.coverage*
@@ -201,12 +201,14 @@ jobs:
   # make sure we can build docs without error
   test-docs:
     runs-on: macos-latest # nicer screenshots
+    env:
+      UV_PYTHON: "3.13"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v6
       - name: 📚 Build docs
         run: uv run --group docs mkdocs build --strict
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: docs
           path: site
@@ -222,7 +224,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 

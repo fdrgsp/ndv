@@ -19,8 +19,12 @@ from psygnal import Signal
 from ._ring_buffer import RingBuffer
 
 if TYPE_CHECKING:
+    from collections.abc import Hashable, Mapping
+
+    from typing_extensions import TypeGuard
+if TYPE_CHECKING:
     from collections.abc import Container, Iterator
-    from typing import Any, Union
+    from typing import Union
 
     import dask.array.core as da
     import numpy.typing as npt

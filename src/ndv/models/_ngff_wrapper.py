@@ -83,6 +83,97 @@ class NGFFWrapper(DataWrapper["ZarrGroup"]):
         # Initialize parent with the group
         super().__init__(self._zarr_group)
 
+    @classmethod
+    def supports(cls, obj: Any) -> TypeGuard[ZarrGroup]:
+        """Check if object is an OME-Zarr store or path.
+
+        Parameters
+        ----------
+        obj : Any
+            Object to check.
+
+        Returns
+        -------
+        bool
+            True if obj is a yaozarrs.ZarrGroup or path to an OME-Zarr store.
+        """
+        # Check if it's a ZarrGroup with OME metadata
+        try:
+            from yaozarrs._zarr import ZarrGroup
+
+            if isinstance(obj, ZarrGroup):
+                # Check if it has OME metadata
+                try:
+                    return obj.ome_metadata() is not None
+                except Exception:
+                    return False
+        except ImportError:
+            pass
+
+        # Check if it's a string path ending in .ome.zarr
+        if isinstance(obj, str):
+            if obj.endswith(".ome.zarr"):
+                return True
+            # Try to open and check for OME metadata
+            try:
+                import yaozarrs
+
+                group = yaozarrs.open_group(obj)
+                return group.ome_metadata() is not None
+            except Exception:
+                return False
+
+        return False
+
+    @property
+    def dims(self) -> tuple[Hashable, ...]:
+        """Dimension labels for the data."""
+        return self._dims
+
+    @property
+    def coords(self) -> Mapping[Hashable, Sequence]:
+        """Coordinates for the data."""
+        return self._coords
+
+    @property
+    def dtype(self) -> np.dtype:
+        """Dtype of the data."""
+        if self._first_array_path is None:
+            raise ValueError("No array path available")
+
+        if not self._is_multiposition:
+            array_node = self._zarr_group[self._first_array_path]
+        else:
+            # Navigate through position
+            pos_path, _ = self._positions[0]
+            pos_group = self._zarr_group[pos_path]
+            array_path = self._first_array_path.replace(f"{pos_path}/", "")
+            array_node = pos_group[array_path]
+
+        from yaozarrs._zarr import ZarrArray
+
+        if not isinstance(array_node, ZarrArray):
+            raise ValueError("Expected ZarrArray")
+
+        return np.dtype(array_node.dtype)  # type: ignore[no-any-return]
+
+    def isel(self, indexers: Mapping[int, int | slice]) -> np.ndarray:
+        """Select data by integer indices.
+
+        Parameters
+        ----------
+        indexers : Mapping[int, int | slice]
+            Mapping from dimension index to slice/index.
+
+        Returns
+        -------
+        np.ndarray
+            Selected data as numpy array.
+        """
+        if not self._is_multiposition:
+            return self._isel_single(indexers)
+        return self._isel_multiposition(indexers)
+
     def _detect_structure(self) -> None:
         """Detect NGFF structure and dispatch to appropriate parser."""
         from yaozarrs import v04, v05
@@ -280,75 +371,6 @@ class NGFFWrapper(DataWrapper["ZarrGroup"]):
             **{dim: range(size) for dim, size in zip(inner_dims, shape)},
         }
 
-    @classmethod
-    def supports(cls, obj: Any) -> TypeGuard[ZarrGroup]:
-        """Check if object is an OME-Zarr store or path.
-
-        Parameters
-        ----------
-        obj : Any
-            Object to check.
-
-        Returns
-        -------
-        bool
-            True if obj is a yaozarrs.ZarrGroup or path to an OME-Zarr store.
-        """
-        # Check if it's a ZarrGroup with OME metadata
-        try:
-            from yaozarrs._zarr import ZarrGroup
-
-            if isinstance(obj, ZarrGroup):
-                # Check if it has OME metadata
-                try:
-                    return obj.ome_metadata() is not None
-                except Exception:
-                    return False
-        except ImportError:
-            pass
-
-        # Check if it's a string path ending in .ome.zarr
-        if isinstance(obj, str):
-            if obj.endswith(".ome.zarr"):
-                return True
-            # Try to open and check for OME metadata
-            try:
-                import yaozarrs
-
-                group = yaozarrs.open_group(obj)
-                return group.ome_metadata() is not None
-            except Exception:
-                return False
-
-        return False
-
-    @property
-    def dims(self) -> tuple[Hashable, ...]:
-        """Dimension labels for the data."""
-        return self._dims
-
-    @property
-    def coords(self) -> Mapping[Hashable, Sequence]:
-        """Coordinates for the data."""
-        return self._coords
-
-    def isel(self, indexers: Mapping[int, int | slice]) -> np.ndarray:
-        """Select data by integer indices.
-
-        Parameters
-        ----------
-        indexers : Mapping[int, int | slice]
-            Mapping from dimension index to slice/index.
-
-        Returns
-        -------
-        np.ndarray
-            Selected data as numpy array.
-        """
-        if not self._is_multiposition:
-            return self._isel_single(indexers)
-        return self._isel_multiposition(indexers)
-
     def _isel_single(self, indexers: Mapping[int, int | slice]) -> np.ndarray:
         """Select data for single-position images."""
         if self._first_array_path is None:
@@ -420,24 +442,3 @@ class NGFFWrapper(DataWrapper["ZarrGroup"]):
             # Fall back to zarr-python (v3)
             return np.asarray(array_node.to_zarr_python()[idx_tuple])
 
-    @property
-    def dtype(self) -> np.dtype:
-        """Dtype of the data."""
-        if self._first_array_path is None:
-            raise ValueError("No array path available")
-
-        if not self._is_multiposition:
-            array_node = self._zarr_group[self._first_array_path]
-        else:
-            # Navigate through position
-            pos_path, _ = self._positions[0]
-            pos_group = self._zarr_group[pos_path]
-            array_path = self._first_array_path.replace(f"{pos_path}/", "")
-            array_node = pos_group[array_path]
-
-        from yaozarrs._zarr import ZarrArray
-
-        if not isinstance(array_node, ZarrArray):
-            raise ValueError("Expected ZarrArray")
-
-        return np.dtype(array_node.dtype)  # type: ignore[no-any-return]

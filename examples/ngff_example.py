@@ -13,9 +13,9 @@ print("Creating multi-position OME-Zarr file...")
 mp_path = ndv.data.ngff_multi_position(
     str(temp_dir / "multipos.ome.zarr"),
     n_positions=5,
-    shape=(3, 2, 64, 64),  # T=3, C=2, Y=64, X=64
+    shape={"t": 3, "c": 2, "z": 4, "y": 64, "x": 64},
     dtype="uint8",
 )
-print(f"✅ Created: {mp_path}")
+print(f"Created: {mp_path}")
 
 ndv.imshow(mp_path)

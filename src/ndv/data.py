@@ -3,20 +3,11 @@
 # pyright: reportMissingImports=none
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 
-if TYPE_CHECKING:
-    from collections.abc import Mapping
-
-__all__ = [
-    "astronaut",
-    "cat",
-    "cells3d",
-    "cosem_dataset",
-    "nd_sine_wave",
-]
+__all__ = ["astronaut", "cat", "cells3d", "cosem_dataset", "nd_sine_wave"]
 
 
 def nd_sine_wave(

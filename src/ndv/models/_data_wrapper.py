@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     import xarray as xr
     from pydantic import GetCoreSchemaHandler
     from typing_extensions import TypeAlias, TypeGuard
+    from yaozarrs import v04, v05
 
     Index: TypeAlias = Union[int, slice]
 
@@ -623,7 +624,7 @@ class NGFFWrapper(DataWrapper):
         super().__init__(self._zarr_group)
 
     @classmethod
-    def supports(cls, obj: Any) -> bool:
+    def supports(cls, obj: Any) -> TypeGuard[Any]:
         """Check if object is an OME-Zarr store or path."""
         # Check if it's a ZarrGroup with OME metadata
         try:
@@ -781,12 +782,10 @@ class NGFFWrapper(DataWrapper):
         """Parse plate structure and collect all FOV positions."""
         from typing import cast
 
-        from yaozarrs import v04, v05
-
         logging.debug("Parsing plate structure")
         self._is_multiposition = True
 
-        metadata = cast(v04.Plate | v05.Plate, self._metadata)
+        metadata = cast("v04.Plate | v05.Plate", self._metadata)
         plate_def = metadata.plate
 
         # Collect FOVs from all wells
@@ -817,12 +816,10 @@ class NGFFWrapper(DataWrapper):
         """Parse well structure and collect all FOV positions."""
         from typing import cast
 
-        from yaozarrs import v04, v05
-
         logging.debug("Parsing well structure")
         self._is_multiposition = True
 
-        metadata = cast(v04.Well | v05.Well, self._metadata)
+        metadata = cast("v04.Well | v05.Well", self._metadata)
         # Collect all FOVs in this well (use first resolution)
         self._positions = [(fov.path, 0) for fov in metadata.well.images]
 

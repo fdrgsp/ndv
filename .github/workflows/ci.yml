@@ -161,6 +161,11 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.12"]
+        include:
+          - python-version: "3.10"
+            extras: "pyqt,pygfx"  # ngff requires Python 3.11+
+          - python-version: "3.12"
+            extras: "pyqt,pygfx,ngff"
 
     steps:
       - uses: actions/checkout@v6
@@ -177,12 +182,12 @@ jobs:
       - name: 🧪 Test (attempt 1)
         id: test1
         continue-on-error: true
-        run: make test extras="pyqt,pygfx,ngff" groups="array-libs" cov=1
+        run: make test extras="${{ matrix.extras }}" groups="array-libs" cov=1
 
       - name: 🧪 Test (attempt 2)
         if: steps.test1.outcome == 'failure'
         id: test2
-        run: make test extras="pyqt,pygfx,ngff" groups="array-libs" cov=1 verbose=1
+        run: make test extras="${{ matrix.extras }}" groups="array-libs" cov=1 verbose=1
 
       - name: Upload coverage
         uses: actions/upload-artifact@v6

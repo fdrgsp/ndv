@@ -57,8 +57,10 @@ def test_plate(plate):
     assert data.shape == (1, 1, 1, 4, 32, 32)
 
 
-def test_supports():
-    assert NGFFWrapper.supports("/path/to/file.ome.zarr")
+def test_supports(single_position):
+    # Only returns True for paths that actually exist and have valid OME metadata
+    assert NGFFWrapper.supports(single_position)
+    assert not NGFFWrapper.supports("/path/to/nonexistent.ome.zarr")
     assert not NGFFWrapper.supports("/path/to/file.zarr")
     assert not NGFFWrapper.supports(123)
 

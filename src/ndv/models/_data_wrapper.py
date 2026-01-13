@@ -3,6 +3,7 @@
 # pyright: reportMissingImports=none
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import sys
@@ -574,6 +575,8 @@ class NGFFWrapper(DataWrapper):
     """Wrapper for OME-NGFF/OME-Zarr stores.
 
     Handles single-position, multi-position (bioformats2raw), wells, and plates.
+
+    It requires the `yaozarrs` package to be installed.
     """
 
     PRIORITY = 45
@@ -589,22 +592,17 @@ class NGFFWrapper(DataWrapper):
 
     @classmethod
     def supports(cls, obj: Any) -> TypeGuard[Any]:
-        try:
-            from yaozarrs._zarr import ZarrGroup
+        with contextlib.suppress(Exception):
+            from yaozarrs import ZarrGroup
 
             if isinstance(obj, ZarrGroup):
                 return obj.ome_metadata() is not None
-        except (ImportError, Exception):
-            pass
+
         if isinstance(obj, str):
-            if obj.endswith(".ome.zarr"):
-                return True
-            try:
+            with contextlib.suppress(Exception):
                 import yaozarrs
 
                 return yaozarrs.open_group(obj).ome_metadata() is not None
-            except Exception:
-                pass
         return False
 
     @property
@@ -630,23 +628,31 @@ class NGFFWrapper(DataWrapper):
     def _detect_structure(
         self,
     ) -> tuple[tuple[Hashable, ...], dict[Hashable, Sequence]]:
-        """Detect NGFF structure and return (dims, coords)."""
+        """Detect NGFF structure and return (dims, coords).
+
+        NGFF supports several layouts:
+        - Single image: has `multiscales` directly
+        - Bf2Raw: has `bioformats2raw.layout`, images in numbered subgroups
+        - Series: has explicit `series` array listing image paths
+        - Plate: has `plate` with wells containing images
+        - Well: has `well` with images array
+        """
         from yaozarrs import v04, v05
 
         meta = self._group.ome_metadata()
+
+        if hasattr(meta, "multiscales") and meta.multiscales:
+            return self._init_single(meta)
+        if isinstance(meta, (v04.Bf2Raw, v05.Bf2Raw)):
+            return self._init_bioformats2raw()
+        if isinstance(meta, (v04.Series, v05.Series)):
+            self._positions = list(meta.series)
+            return self._init_multiposition()
         if isinstance(meta, (v04.Plate, v05.Plate)):
             return self._init_plate(meta)
         if isinstance(meta, (v04.Well, v05.Well)):
             return self._init_well(meta)
-        if hasattr(meta, "multiscales") and meta.multiscales:
-            attrs = self._group.attrs
-            if "bioformats2raw.layout" in attrs or (
-                "ome" in attrs and "bioformats2raw.layout" in attrs["ome"]
-            ):
-                return self._init_bioformats2raw()
-            return self._init_single(meta)
-        if hasattr(meta, "bioformats2raw_layout") and meta.bioformats2raw_layout:
-            return self._init_bioformats2raw()
+
         raise ValueError(f"Unknown NGFF structure: {self._group.store_path}")
 
     def _init_single(self, meta: Any) -> tuple[tuple[Hashable, ...], dict]:

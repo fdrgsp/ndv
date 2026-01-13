@@ -36,7 +36,6 @@ if TYPE_CHECKING:
     import xarray as xr
     from pydantic import GetCoreSchemaHandler
     from typing_extensions import TypeAlias, TypeGuard
-    from yaozarrs import v04, v05
 
     Index: TypeAlias = Union[int, slice]
 
@@ -574,10 +573,7 @@ class RingBufferWrapper(DataWrapper[RingBuffer]):
 class NGFFWrapper(DataWrapper):
     """Wrapper for OME-NGFF/OME-Zarr stores.
 
-    This wrapper handles:
-    - Single-position images (standard multiscale)
-    - Multi-position/multi-FOV datasets (bioformats2raw layout)
-    - HCS plates with wells and fields of view
+    Handles single-position, multi-position (bioformats2raw), wells, and plates.
     """
 
     PRIORITY = 45
@@ -585,40 +581,30 @@ class NGFFWrapper(DataWrapper):
     def __init__(self, data: Any) -> None:
         import yaozarrs
 
-        self._zarr_group = yaozarrs.open_group(data) if isinstance(data, str) else data
-        self._metadata = self._zarr_group.ome_metadata()
-        self._positions: list[tuple[str, int]] = []
-        self._dims: tuple[Hashable, ...] = ()
-        self._coords: dict[Hashable, Sequence] = {}
-        self._is_multiposition = False
-        self._first_array_path: str | None = None
-        self._detect_structure()
-        super().__init__(self._zarr_group)
+        self._group = yaozarrs.open_group(data) if isinstance(data, str) else data
+        self._positions: list[str] = []
+        self._dataset_path: str = ""
+        self._dims, self._coords = self._detect_structure()
+        super().__init__(self._group)
 
     @classmethod
     def supports(cls, obj: Any) -> TypeGuard[Any]:
-        # Check if it's a ZarrGroup with OME metadata
         try:
             from yaozarrs._zarr import ZarrGroup
 
             if isinstance(obj, ZarrGroup):
-                try:
-                    return obj.ome_metadata() is not None
-                except Exception:
-                    return False
-        except ImportError:
+                return obj.ome_metadata() is not None
+        except (ImportError, Exception):
             pass
-        # Check if it's a string path ending in .ome.zarr
         if isinstance(obj, str):
             if obj.endswith(".ome.zarr"):
                 return True
-            # Try to open and check for OME metadata
             try:
                 import yaozarrs
 
                 return yaozarrs.open_group(obj).ome_metadata() is not None
             except Exception:
-                return False
+                pass
         return False
 
     @property
@@ -631,194 +617,136 @@ class NGFFWrapper(DataWrapper):
 
     @property
     def dtype(self) -> np.dtype:
-        if self._first_array_path is None:
-            raise ValueError("No array path available")
-        if self._is_multiposition:
-            pos_path, _ = self._positions[0]
-            array_path = self._first_array_path.replace(f"{pos_path}/", "")
-            array_node = self._get_zarr_array(array_path, self._zarr_group[pos_path])
-        else:
-            array_node = self._get_zarr_array(self._first_array_path)
-        return np.dtype(array_node.dtype)  # type: ignore[no-any-return]
+        group = self._group[self._positions[0]] if self._positions else self._group
+        return np.dtype(group[self._dataset_path].dtype)
 
     def isel(self, indexers: Mapping[int, int | slice]) -> np.ndarray:
-        if not self._is_multiposition:
-            return self._isel_single(indexers)
-        return self._isel_multiposition(indexers)
+        if self._positions:
+            return self._isel_multiposition(indexers)
+        return self._isel_single(indexers)
 
-    def _get_zarr_array(self, path: str, parent: Any = None) -> Any:
-        """Get and validate a ZarrArray at the given path."""
-        from yaozarrs._zarr import ZarrArray as ZArray
+    # ----------------------- Structure Detection -----------------------
 
-        group = parent if parent is not None else self._zarr_group
-        if path not in group:
-            raise ValueError(f"Path {path} not found in group")
-        node = group[path]
-        if not isinstance(node, ZArray):
-            raise ValueError(f"Expected ZarrArray at {path}")
-        return node
-
-    def _get_first_multiscale(self, metadata: Any) -> Any:
-        """Extract the first multiscale from metadata, validating its existence."""
-        if not hasattr(metadata, "multiscales") or not metadata.multiscales:
-            raise ValueError("No multiscales found in metadata")
-        multiscale = metadata.multiscales[0]
-        if not multiscale.datasets:
-            raise ValueError("No datasets found in multiscale")
-        return multiscale
-
-    def _extract_dims(self, multiscale: Any, ndim: int) -> tuple[Hashable, ...]:
-        """Extract dimension names from multiscale axes, or use integer indices."""
-        if hasattr(multiscale, "axes") and multiscale.axes:
-            return tuple(axis.name for axis in multiscale.axes)
-        return tuple(range(ndim))
-
-    def _detect_structure(self) -> None:
-        """Detect NGFF structure and dispatch to appropriate parser."""
+    def _detect_structure(
+        self,
+    ) -> tuple[tuple[Hashable, ...], dict[Hashable, Sequence]]:
+        """Detect NGFF structure and return (dims, coords)."""
         from yaozarrs import v04, v05
 
-        metadata = self._metadata
-        if isinstance(metadata, (v04.Plate, v05.Plate)):
-            self._parse_plate()
-        elif isinstance(metadata, (v04.Well, v05.Well)):
-            self._parse_well()
-        elif hasattr(metadata, "multiscales") and metadata.multiscales:
-            attrs = self._zarr_group.attrs
-            has_bf2raw = "bioformats2raw.layout" in attrs or (
+        meta = self._group.ome_metadata()
+        if isinstance(meta, (v04.Plate, v05.Plate)):
+            return self._init_plate(meta)
+        if isinstance(meta, (v04.Well, v05.Well)):
+            return self._init_well(meta)
+        if hasattr(meta, "multiscales") and meta.multiscales:
+            attrs = self._group.attrs
+            if "bioformats2raw.layout" in attrs or (
                 "ome" in attrs and "bioformats2raw.layout" in attrs["ome"]
-            )
-            if has_bf2raw:
-                self._parse_bioformats2raw()
-            else:
-                self._parse_single_image()
-        elif (
-            hasattr(metadata, "bioformats2raw_layout")
-            and metadata.bioformats2raw_layout
-        ):
-            self._parse_bioformats2raw()
-        else:
-            raise ValueError(f"Unknown NGFF structure: {self._zarr_group.store_path}")
+            ):
+                return self._init_bioformats2raw()
+            return self._init_single(meta)
+        if hasattr(meta, "bioformats2raw_layout") and meta.bioformats2raw_layout:
+            return self._init_bioformats2raw()
+        raise ValueError(f"Unknown NGFF structure: {self._group.store_path}")
 
-    def _parse_plate(self) -> None:
-        from typing import cast
+    def _init_single(self, meta: Any) -> tuple[tuple[Hashable, ...], dict]:
+        """Initialize single-position image."""
+        ms = meta.multiscales[0]
+        self._dataset_path = ms.datasets[0].path
+        arr = self._group[self._dataset_path]
+        shape = arr.metadata.shape
+        dims = self._dims_from_axes(ms.axes, len(shape))
+        return dims, {d: range(s) for d, s in zip(dims, shape)}
 
-        self._is_multiposition = True
-        metadata = cast("v04.Plate | v05.Plate", self._metadata)
-        for well_ref in metadata.plate.wells:
-            well_path = well_ref.path
-            if well_path not in self._zarr_group:
-                continue
-            well_group = self._zarr_group[well_path]
-            well_metadata = well_group.ome_metadata()
-            if not hasattr(well_metadata, "well"):
-                continue
-            self._positions.extend(
-                (f"{well_path}/{fov.path}", 0) for fov in well_metadata.well.images
-            )
+    def _init_bioformats2raw(self) -> tuple[tuple[Hashable, ...], dict]:
+        """Initialize bioformats2raw layout."""
+        if "OME" in self._group:
+            series = self._group["OME"].metadata.attributes.get("series")
+            if series:
+                self._positions = list(series)
         if not self._positions:
-            raise ValueError("No FOV positions found in plate")
-        self._load_first_position_metadata()
-
-    def _parse_well(self) -> None:
-        from typing import cast
-
-        self._is_multiposition = True
-        metadata = cast("v04.Well | v05.Well", self._metadata)
-        self._positions = [(fov.path, 0) for fov in metadata.well.images]
-        if not self._positions:
-            raise ValueError("No FOV positions found in well")
-        self._load_first_position_metadata()
-
-    def _parse_bioformats2raw(self) -> None:
-        self._is_multiposition = True
-        if "OME" in self._zarr_group:
-            ome_meta = self._zarr_group["OME"].metadata
-            if "series" in ome_meta.attributes:
-                self._positions = [(path, 0) for path in ome_meta.attributes["series"]]
-            else:
-                self._find_numbered_positions()
-        else:
-            self._find_numbered_positions()
+            # Find numbered subgroups (0, 1, 2, ...)
+            i = 0
+            while str(i) in self._group:
+                child = self._group[str(i)]
+                if hasattr(child, "ome_metadata"):
+                    child_meta = child.ome_metadata()
+                    if hasattr(child_meta, "multiscales") and child_meta.multiscales:
+                        self._positions.append(str(i))
+                i += 1
         if not self._positions:
             raise ValueError("No positions found in bioformats2raw layout")
-        self._load_first_position_metadata()
+        return self._init_multiposition()
 
-    def _find_numbered_positions(self) -> None:
-        """Find numbered position subgroups (0, 1, 2, ...)."""
-        i = 0
-        while (path := str(i)) in self._zarr_group:
-            child = self._zarr_group[path]
-            if hasattr(child, "ome_metadata"):
-                child_meta = child.ome_metadata()
-                if hasattr(child_meta, "multiscales") and child_meta.multiscales:
-                    self._positions.append((path, 0))
-            i += 1
-
-    def _parse_single_image(self) -> None:
-        self._is_multiposition = False
-        multiscale = self._get_first_multiscale(self._metadata)
-        dataset_path = multiscale.datasets[0].path
-        self._first_array_path = dataset_path
-        array_node = self._get_zarr_array(dataset_path)
-        shape = tuple(array_node.metadata.shape)
-        self._dims = self._extract_dims(multiscale, len(shape))
-        self._coords = {dim: range(size) for dim, size in zip(self._dims, shape)}
-
-    def _load_first_position_metadata(self) -> None:
+    def _init_well(self, meta: Any) -> tuple[tuple[Hashable, ...], dict]:
+        """Initialize well."""
+        self._positions = [fov.path for fov in meta.well.images]
         if not self._positions:
-            raise ValueError("No positions to load metadata from")
-        first_pos_path, res_idx = self._positions[0]
-        pos_group = self._zarr_group[first_pos_path]
-        pos_metadata = pos_group.ome_metadata()
-        multiscale = self._get_first_multiscale(pos_metadata)
-        if res_idx >= len(multiscale.datasets):
-            raise ValueError(f"Resolution index {res_idx} out of range")
-        dataset_path = multiscale.datasets[res_idx].path
-        self._first_array_path = f"{first_pos_path}/{dataset_path}"
-        array_node = self._get_zarr_array(dataset_path, pos_group)
-        shape = tuple(array_node.metadata.shape)
-        inner_dims = self._extract_dims(multiscale, len(shape))
-        self._dims = ("p", *inner_dims)
-        self._coords = {
-            "p": range(len(self._positions)),
-            **{dim: range(size) for dim, size in zip(inner_dims, shape)},
-        }
+            raise ValueError("No FOV positions found in well")
+        return self._init_multiposition()
+
+    def _init_plate(self, meta: Any) -> tuple[tuple[Hashable, ...], dict]:
+        """Initialize HCS plate."""
+        for well_ref in meta.plate.wells:
+            if well_ref.path not in self._group:
+                continue
+            well_meta = self._group[well_ref.path].ome_metadata()
+            if hasattr(well_meta, "well"):
+                self._positions.extend(
+                    f"{well_ref.path}/{fov.path}" for fov in well_meta.well.images
+                )
+        if not self._positions:
+            raise ValueError("No FOV positions found in plate")
+        return self._init_multiposition()
+
+    def _init_multiposition(self) -> tuple[tuple[Hashable, ...], dict]:
+        """Finalize multi-position setup using first position's metadata."""
+        pos_group = self._group[self._positions[0]]
+        ms = pos_group.ome_metadata().multiscales[0]
+        self._dataset_path = ms.datasets[0].path
+        arr = pos_group[self._dataset_path]
+        shape = arr.metadata.shape
+        inner_dims = self._dims_from_axes(ms.axes, len(shape))
+        dims = ("p", *inner_dims)
+        coords: dict[Hashable, Sequence] = {"p": range(len(self._positions))}
+        coords.update({d: range(s) for d, s in zip(inner_dims, shape)})
+        return dims, coords
+
+    @staticmethod
+    def _dims_from_axes(axes: Any, ndim: int) -> tuple[Hashable, ...]:
+        """Extract dimension names from axes or use integer indices."""
+        if axes:
+            return tuple(ax.name for ax in axes)
+        return tuple(range(ndim))
+
+    # ----------------------- Data Access -----------------------
 
     def _isel_single(self, indexers: Mapping[int, int | slice]) -> np.ndarray:
-        if self._first_array_path is None:
-            raise ValueError("No array path available")
-        array_node = self._get_zarr_array(self._first_array_path)
-        idx_tuple = tuple(indexers.get(i, slice(None)) for i in range(len(self._dims)))
-        return self._read_array_data(array_node, idx_tuple)
+        arr = self._group[self._dataset_path]
+        idx = tuple(indexers.get(i, slice(None)) for i in range(len(self._dims)))
+        return self._read_array(arr, idx)
 
     def _isel_multiposition(self, indexers: Mapping[int, int | slice]) -> np.ndarray:
-        # Resolve position index
         pos_idx = indexers.get(0)
-        keep_pos_dim = False
+        keep_dim = isinstance(pos_idx, slice)
         if pos_idx is None:
             pos_idx = 0
         elif isinstance(pos_idx, slice):
-            pos_idx = pos_idx.start if pos_idx.start is not None else 0
-            keep_pos_dim = True
+            pos_idx = pos_idx.start or 0
         if not 0 <= pos_idx < len(self._positions):
             raise IndexError(f"Position index {pos_idx} out of range")
 
-        pos_path, res_idx = self._positions[pos_idx]
-        pos_group = self._zarr_group[pos_path]
-        multiscale = self._get_first_multiscale(pos_group.ome_metadata())
-        dataset_path = multiscale.datasets[res_idx].path
-        array_node = self._get_zarr_array(dataset_path, pos_group)
-        inner_indexers = {
-            i - 1: indexers[i] for i in range(1, len(self._dims)) if i in indexers
-        }
-        idx_tuple = tuple(
-            inner_indexers.get(i, slice(None)) for i in range(len(self._dims) - 1)
+        pos_group = self._group[self._positions[pos_idx]]
+        arr = pos_group[self._dataset_path]
+        inner_idx = tuple(
+            indexers.get(i, slice(None)) for i in range(1, len(self._dims))
         )
-        data = self._read_array_data(array_node, idx_tuple)
-        return data[np.newaxis, ...] if keep_pos_dim else data
+        data = self._read_array(arr, inner_idx)
+        return data[np.newaxis, ...] if keep_dim else data
 
-    def _read_array_data(self, array_node: Any, idx_tuple: tuple) -> np.ndarray:
+    @staticmethod
+    def _read_array(arr: Any, idx: tuple) -> np.ndarray:
         try:
-            return np.asarray(array_node.to_tensorstore()[idx_tuple].read().result())
+            return np.asarray(arr.to_tensorstore()[idx].read().result())
         except ImportError:
-            return np.asarray(array_node.to_zarr_python()[idx_tuple])
+            return np.asarray(arr.to_zarr_python()[idx])

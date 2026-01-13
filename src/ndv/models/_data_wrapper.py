@@ -574,7 +574,8 @@ class RingBufferWrapper(DataWrapper[RingBuffer]):
 class NGFFWrapper(DataWrapper):
     """Wrapper for OME-NGFF/OME-Zarr stores.
 
-    Handles single-position, multi-position (bioformats2raw), wells, and plates.
+    Handles single-position, multi-position (bioformats2raw), wells, and plates
+    NOTE: if pyramidal datasets are present, only the first resolution level is used.
 
     It requires the `yaozarrs` package to be installed.
     """

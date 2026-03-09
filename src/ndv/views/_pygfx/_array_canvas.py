@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, Callable, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from weakref import ReferenceType, WeakKeyDictionary, ref
 
 import cmap as _cmap
@@ -24,16 +24,10 @@ from ndv.views.bases._graphics._canvas_elements import RectangularROIHandle, ROI
 from ._util import rendercanvas_class
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from pygfx.materials import ImageBasicMaterial
     from pygfx.resources import Texture
-    from typing_extensions import TypeAlias
-    from wgpu.gui.jupyter import JupyterWgpuCanvas
-    from wgpu.gui.qt import QWgpuCanvas
-    from wgpu.gui.wx import WxWgpuCanvas
-
-    WgpuCanvas: TypeAlias = "QWgpuCanvas | JupyterWgpuCanvas | WxWgpuCanvas"
 
 
 def _is_inside(bounding_box: np.ndarray | None, pos: Sequence[float]) -> bool:
@@ -387,9 +381,9 @@ class GfxArrayCanvas(ArrayCanvas):
         self._disconnect_mouse_events = filter_mouse_events(self._canvas, self)
 
         self._renderer = pygfx.renderers.WgpuRenderer(self._canvas)
-        self._renderer.blend_mode = "additive"
 
         self._scene = pygfx.Scene()
+        self._scene.add(pygfx.Background(None, pygfx.BackgroundMaterial("black")))
         self._camera: pygfx.Camera | None = None
         self._ndim: Literal[2, 3] | None = None
 
@@ -397,6 +391,8 @@ class GfxArrayCanvas(ArrayCanvas):
         self._selection: CanvasElement | None = None
         # Maintain a weak reference to the last ROI created.
         self._last_roi_created: ReferenceType[PyGFXRectangle] | None = None
+
+        self._canvas.add_event_handler(lambda e: self.refresh(), "resize")
 
     def frontend_widget(self) -> Any:
         return self._canvas
@@ -450,8 +446,7 @@ class GfxArrayCanvas(ArrayCanvas):
         tex = pygfx.Texture(data, dim=2)
         image = pygfx.Image(
             pygfx.Geometry(grid=tex),
-            # depth_test=False for additive-like blending
-            pygfx.ImageBasicMaterial(depth_test=False),
+            pygfx.ImageBasicMaterial(depth_test=False, alpha_mode="add"),
         )
         self._scene.add(image)
 
@@ -475,8 +470,9 @@ class GfxArrayCanvas(ArrayCanvas):
         tex = pygfx.Texture(data, dim=3)
         vol = pygfx.Volume(
             pygfx.Geometry(grid=tex),
-            # depth_test=False for additive-like blending
-            pygfx.VolumeRayMaterial(interpolation="nearest", depth_test=False),
+            pygfx.VolumeRayMaterial(
+                interpolation="nearest", depth_test=False, alpha_mode="add"
+            ),
         )
         self._scene.add(vol)
 
@@ -503,6 +499,25 @@ class GfxArrayCanvas(ArrayCanvas):
         self._elements[roi._container] = roi
         self._last_roi_created = ref(roi)
         return roi
+
+    def set_scales(self, scales: tuple[float, ...]) -> None:
+        """Set per-visible-axis scale factors for rendering."""
+        if not scales:
+            return
+        # scales are in data order (slowest-to-fastest, e.g. ZYX)
+        # pygfx uses XYZ, so reverse
+        gfx_scales = list(reversed(scales))
+        # pad to 3 components
+        while len(gfx_scales) < 3:
+            gfx_scales.append(1.0)
+        sx, sy, sz = gfx_scales[0], gfx_scales[1], gfx_scales[2]
+        has_visuals = False
+        for child in self._scene.children:
+            if isinstance(child, (pygfx.Image, pygfx.Volume)):
+                child.local.scale = (sx, sy, sz)
+                has_visuals = True
+        if has_visuals:
+            self.set_range()
 
     def set_range(
         self,
@@ -531,6 +546,21 @@ class GfxArrayCanvas(ArrayCanvas):
             cam.height = height
             cam.zoom = 1 - margin
         self.refresh()
+
+    def zoom(self, factor: float | tuple, center: tuple[float, float] = (0, 0)) -> None:
+        """Zoom in (or out) at the given center (world coordinates)."""
+        if (cam := self._camera) is None:
+            return
+
+        cx, cy = center
+        px, py, pz = cam.local.position
+        cam.local.position = (
+            cx + (px - cx) * factor,
+            cy + (py - cy) * factor,
+            pz,
+        )
+        cam.zoom /= factor
+        self._canvas.force_draw()
 
     def refresh(self) -> None:
         with suppress(AttributeError):

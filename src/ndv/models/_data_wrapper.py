@@ -19,12 +19,11 @@ from psygnal import Signal
 from ._ring_buffer import RingBuffer
 
 if TYPE_CHECKING:
-    from collections.abc import Hashable, Mapping
-
-    from typing_extensions import TypeGuard
+    from collections.abc import Hashable
+    from typing import TypeGuard
 if TYPE_CHECKING:
     from collections.abc import Container, Iterator
-    from typing import Union
+    from typing import Any, TypeAlias, TypeGuard
 
     import dask.array.core as da
     import numpy.typing as npt
@@ -35,9 +34,8 @@ if TYPE_CHECKING:
     import torch
     import xarray as xr
     from pydantic import GetCoreSchemaHandler
-    from typing_extensions import TypeAlias, TypeGuard
 
-    Index: TypeAlias = Union[int, slice]
+    Index: TypeAlias = int | slice
 
 
 class SupportsIndexing(Protocol):
@@ -133,15 +131,20 @@ class DataWrapper(Generic[ArrayT], ABC):
     @property
     def dims(self) -> tuple[Hashable, ...]:
         """Return the dimension labels for the data."""
+        if hasattr(self._data, "dims"):
+            return tuple(self._data.dims)
         # type ignore is asserted in the __init__ method
         return tuple(range(len(self._data.shape)))  # type: ignore [attr-defined]
 
     @property
     def coords(self) -> Mapping[Hashable, Sequence]:
         """Return the coordinates for the data."""
+        if hasattr(self._data, "coords") and isinstance(self._data.coords, Mapping):
+            return self._data.coords
+
         dims = self.dims
         # type ignore is asserted in the __init__ method
-        return {i: range(s) for i, s in zip(dims, self._data.shape)}  # type: ignore [attr-defined]
+        return {i: range(s) for i, s in zip(dims, self._data.shape, strict=False)}  # type: ignore [attr-defined]
 
     def isel(self, index: Mapping[int, int | slice]) -> np.ndarray:
         """Return a slice of the data as a numpy array.
@@ -163,6 +166,11 @@ class DataWrapper(Generic[ArrayT], ABC):
 
     def save_as_zarr(self, path: str) -> None:
         raise NotImplementedError("Saving as zarr is not supported for this data type")
+
+    @property
+    def significant_bits(self) -> int | None:
+        """Number of significant bits per sample, if known from metadata."""
+        return None
 
     @property
     def dtype(self) -> np.dtype:
@@ -311,6 +319,38 @@ class DataWrapper(Generic[ArrayT], ABC):
                 ) from e
             raise IndexError(f"Axis label {axis} not found in data dimensions") from e
 
+    def channel_names(self, channel_axis: int | None) -> dict[int, str]:
+        """Return channel display names from data metadata."""
+        if channel_axis is None:
+            return {}
+        dim = self.dims[channel_axis]
+        coords = self.coords.get(dim, None)
+        # range coords are not informative, so return empty dict in that case
+        # and let resolution logic fallback to generic channel naming
+        if coords is None or isinstance(coords, range):
+            return {}
+        return {
+            i: str(v.item() if hasattr(v, "item") else v) for i, v in enumerate(coords)
+        }
+
+    def axis_scales(self) -> dict[Hashable, float]:
+        """Return per-axis scale factors from coordinate spacing."""
+        scales: dict[Hashable, float] = {}
+        for dim in self.dims:
+            coord = self.coords.get(dim)
+            if coord is None or len(coord) < 2:
+                continue
+            try:
+                values = [float(v) for v in coord]
+            except (TypeError, ValueError):
+                continue
+            if any(not np.isfinite(v) for v in values):
+                continue
+            diffs = [values[i + 1] - values[i] for i in range(len(values) - 1)]
+            if all(abs(d - diffs[0]) < 1e-10 for d in diffs):
+                scales[dim] = diffs[0]
+        return scales
+
     def clear_cache(self) -> None:
         """Clear any cached properties."""
         if hasattr(self, "axis_map"):
@@ -403,16 +443,6 @@ class CLArrayWrapper(DataWrapper["cl_array.Array"]):
 class XarrayWrapper(DataWrapper["xr.DataArray"]):
     """Wrapper for xarray DataArray objects."""
 
-    @property
-    def dims(self) -> tuple[Hashable, ...]:
-        """Return the dimension labels for the data."""
-        return tuple(self._data.dims)
-
-    @property
-    def coords(self) -> Mapping[Hashable, Sequence]:
-        """Return the coordinates for the data."""
-        return self.data.coords  # type: ignore [no-any-return]
-
     @classmethod
     def supports(cls, obj: Any) -> TypeGuard[xr.DataArray]:
         if (xr := sys.modules.get("xarray")) and isinstance(obj, xr.DataArray):
@@ -449,7 +479,8 @@ class TensorstoreWrapper(DataWrapper["ts.TensorStore"]):
         else:
             self._dims = tuple(range(len(self._data.domain)))
         self._coords: Mapping[Hashable, Sequence] = {
-            i: range(s) for i, s in zip(self._dims, self._data.domain.shape)
+            i: range(s)
+            for i, s in zip(self._dims, self._data.domain.shape, strict=False)
         }
 
     @property
@@ -468,7 +499,7 @@ class TensorstoreWrapper(DataWrapper["ts.TensorStore"]):
         return self._coords
 
     def sizes(self) -> Mapping[Hashable, int]:
-        return dict(zip(self._dims, self._data.domain.shape))
+        return dict(zip(self._dims, self._data.domain.shape, strict=False))
 
     def isel(self, indexers: Mapping[int, int | slice]) -> np.ndarray:
         if not indexers:
@@ -493,7 +524,7 @@ class TorchTensorWrapper(DataWrapper["torch.Tensor"]):
     @property
     def coords(self) -> Mapping[Hashable, Sequence]:
         dims = self.dims
-        return {i: range(s) for i, s in zip(dims, self.data.shape)}
+        return {i: range(s) for i, s in zip(dims, self.data.shape, strict=False)}
 
     @property
     def dims(self) -> tuple[Hashable, ...]:

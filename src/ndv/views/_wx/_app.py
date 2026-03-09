@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 import wx
 from wx import (
@@ -9,16 +9,24 @@ from wx import (
     EVT_LEFT_DOWN,
     EVT_LEFT_UP,
     EVT_MOTION,
-    EvtHandler,
     MouseEvent,
 )
 
-from ndv._types import MouseButton, MouseMoveEvent, MousePressEvent, MouseReleaseEvent
+from ndv._types import (
+    KeyCode,
+    KeyMod,
+    KeyPressEvent,
+    MouseButton,
+    MouseMoveEvent,
+    MousePressEvent,
+    MouseReleaseEvent,
+)
 from ndv.views.bases._app import NDVApp
 
 from ._main_thread import call_in_main_thread
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from concurrent.futures import Future
 
     from ndv.views.bases import ArrayView
@@ -65,13 +73,8 @@ class WxAppWrap(NDVApp):
     def filter_mouse_events(
         self, canvas: Any, receiver: Mouseable
     ) -> Callable[[], None]:
-        if not isinstance(canvas, EvtHandler):
-            raise TypeError(
-                f"Expected vispy canvas to be wx EvtHandler, got {type(canvas)}"
-            )
-
-        if hasattr(canvas, "_subwidget"):
-            canvas = canvas._subwidget  # pyright: ignore[reportAttributeAccessIssue]
+        if not isinstance(canvas, wx.Window):
+            raise TypeError(f"Expected canvas to be wx.Window, got {type(canvas)}")
 
         # TIP: event.Skip() allows the event to propagate to other handlers.
 
@@ -141,6 +144,41 @@ class WxAppWrap(NDVApp):
 
         return _unbind
 
+    def filter_key_events(self, widget: Any, receiver: ArrayView) -> Callable[[], None]:
+        if not isinstance(widget, wx.Window):
+            raise TypeError(f"Expected widget to be wx.Window, got {type(widget)}")
+
+        def on_key_down(event: wx.KeyEvent) -> None:
+            key_code = event.GetKeyCode()
+            key: KeyCode | str
+            if key_code in _WX_KEY_MAP:
+                key = _WX_KEY_MAP[key_code]
+            else:
+                uchar = event.GetUnicodeKey()
+                if uchar != wx.WXK_NONE:
+                    key = chr(uchar)
+                else:
+                    event.Skip()
+                    return
+            mods = KeyMod.NONE
+            if event.ShiftDown():
+                mods |= KeyMod.SHIFT
+            if event.ControlDown():
+                mods |= KeyMod.CTRL
+            if event.AltDown():
+                mods |= KeyMod.ALT
+            if event.MetaDown():
+                mods |= KeyMod.META
+            receiver.keyPressed.emit(KeyPressEvent(key, mods))
+            event.Skip()
+
+        widget.Bind(wx.EVT_CHAR_HOOK, handler=on_key_down)
+
+        def _unbind() -> None:
+            widget.Unbind(wx.EVT_CHAR_HOOK, handler=on_key_down)
+
+        return _unbind
+
     def process_events(self) -> None:
         """Process events."""
         wx.SafeYield()
@@ -148,3 +186,14 @@ class WxAppWrap(NDVApp):
     def call_later(self, msec: int, func: Callable[[], None]) -> None:
         """Call `func` after `msec` milliseconds."""
         wx.CallLater(msec, func)
+
+
+_WX_KEY_MAP: dict[int, KeyCode] = {
+    wx.WXK_UP: KeyCode.UP,
+    wx.WXK_DOWN: KeyCode.DOWN,
+    wx.WXK_LEFT: KeyCode.LEFT,
+    wx.WXK_RIGHT: KeyCode.RIGHT,
+    wx.WXK_SPACE: KeyCode.SPACE,
+    wx.WXK_HOME: KeyCode.HOME,
+    wx.WXK_END: KeyCode.END,
+}

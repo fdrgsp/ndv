@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import warnings
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, Literal, cast
-from weakref import ReferenceType, WeakKeyDictionary
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
+from weakref import ReferenceType, WeakValueDictionary
 
 import cmap as _cmap
 import numpy as np
@@ -23,6 +23,8 @@ from ndv._types import (
 )
 from ndv.models._viewer_model import ArrayViewerModel, InteractionMode
 from ndv.views._app import filter_mouse_events
+from ndv.views._util import downsample_data
+from ndv.views._vispy._util import get_max_texture_sizes
 from ndv.views.bases import ArrayCanvas
 from ndv.views.bases._graphics._canvas_elements import (
     CanvasElement,
@@ -43,6 +45,8 @@ class VispyImageHandle(ImageHandle):
     def __init__(self, visual: visuals.ImageVisual | visuals.VolumeVisual) -> None:
         self._visual = visual
         self._allowed_dims = {2, 3} if isinstance(visual, visuals.ImageVisual) else {3}
+        # per-axis downsample strides applied to fit GPU texture limits
+        self._downsample_factors: tuple[int, ...] = ()
 
     def data(self) -> np.ndarray:
         try:
@@ -58,6 +62,13 @@ class VispyImageHandle(ImageHandle):
                 stacklevel=2,
             )
             return
+
+        data, downsample_factors = _downcast_and_downsample(
+            data,
+            three_d=isinstance(self._visual, visuals.VolumeVisual),
+            warn=False,
+        )
+        self._downsample_factors = downsample_factors
         self._visual.set_data(data)
 
     def visible(self) -> bool:
@@ -230,7 +241,7 @@ class VispyRectangle(RectangularROIHandle):
         # Convert canvas -> world
         canvas_pos = (event.x, event.y)
         world_pos = self._tform().map(canvas_pos)[:2]
-        drag_idx = self._handle_under(world_pos)
+        drag_idx = self._handle_under(canvas_pos)
         # If a marker is pressed
         if drag_idx is not None:
             opposite_idx = (drag_idx + 2) % 4
@@ -248,7 +259,7 @@ class VispyRectangle(RectangularROIHandle):
     def get_cursor(self, event: MouseMoveEvent) -> CursorType | None:
         canvas_pos = (event.x, event.y)
         pos = self._tform().map(canvas_pos)[:2]
-        if self._handle_under(pos) is not None:
+        if self._handle_under(canvas_pos) is not None:
             center = self._rect.center
             if pos[0] < center[0] and pos[1] < center[1]:
                 return CursorType.FDIAG_ARROW
@@ -268,15 +279,16 @@ class VispyRectangle(RectangularROIHandle):
         self._rect.parent = None
         self._handles.parent = None
 
-    def _handle_under(self, pos: Sequence[float]) -> int | None:
+    def _handle_under(self, canvas_pos: Sequence[float]) -> int | None:
         """Returns an int in [0, 3], or None.
 
-        If an int i, means that the handle at self._positions[i] is at pos.
-        If None, there is no handle at pos.
+        canvas_pos should be in canvas (screen pixel) coordinates.
         """
         rad2 = (self._handle_size / 2) ** 2
+        tform = self._rect.transforms.get_transform("scene", "canvas")
         for i, p in enumerate(self._handle_data):
-            if (p[0] - pos[0]) ** 2 + (p[1] - pos[1]) ** 2 <= rad2:
+            hp = tform.map(p)[:2]
+            if (hp[0] - canvas_pos[0]) ** 2 + (hp[1] - canvas_pos[1]) ** 2 <= rad2:
                 return i
         return None
 
@@ -305,7 +317,16 @@ class VispyArrayCanvas(ArrayCanvas):
         self._view: scene.ViewBox = central_wdg.add_view()
         self._ndim: Literal[2, 3] | None = None
 
-        self._elements: WeakKeyDictionary = WeakKeyDictionary()
+        # Maps vispy visuals (scene children) → CanvasElement handles.
+        # Entries are added by add_image/add_volume/add_bounding_box.
+        # Nobody explicitly removes entries: the controller owns handle
+        # lifetimes via ChannelController.handles/lut_views (for images) and
+        # _roi_view (for ROIs).  When the controller calls handle.remove()
+        # (in _clear_canvas) those refs are dropped, the handle is GC'd, and
+        # the WeakValueDictionary entry is automatically removed.
+        # NB: a WeakKeyDictionary would create a ref cycle here because
+        # each handle (value) holds a strong ref back to its visual (key).
+        self._elements = WeakValueDictionary[scene.Node, CanvasElement]()
         self._selection: CanvasElement | None = None
         # Maintain weak reference to last ROI created
         self._last_roi_created: ReferenceType[VispyRectangle] | None = None
@@ -349,7 +370,7 @@ class VispyArrayCanvas(ArrayCanvas):
 
     def add_image(self, data: np.ndarray | None = None) -> VispyImageHandle:
         """Add a new Image node to the scene."""
-        data = _downcast(data)
+        data, downsample_factors = _downcast_and_downsample(data, three_d=False)
         try:
             img = scene.visuals.Image(
                 data, parent=self._view.scene, texture_format="auto"
@@ -361,13 +382,14 @@ class VispyArrayCanvas(ArrayCanvas):
         img.set_gl_state("additive", depth_test=False)
         img.interactive = True
         handle = VispyImageHandle(img)
+        handle._downsample_factors = downsample_factors
         self._elements[img] = handle
         if data is not None:
             self.set_range()
         return handle
 
     def add_volume(self, data: np.ndarray | None = None) -> VispyImageHandle:
-        data = _downcast(data)
+        data, downsample_factors = _downcast_and_downsample(data, three_d=True)
         try:
             vol = scene.visuals.Volume(
                 data,
@@ -384,6 +406,7 @@ class VispyArrayCanvas(ArrayCanvas):
         vol.set_gl_state("additive", depth_test=False)
         vol.interactive = True
         handle = VispyImageHandle(vol)
+        handle._downsample_factors = downsample_factors
         self._elements[vol] = handle
         if data is not None:
             self.set_range()
@@ -409,11 +432,24 @@ class VispyArrayCanvas(ArrayCanvas):
         while len(vis_scales) < 3:
             vis_scales.append(1.0)
         sx, sy, sz = vis_scales[0], vis_scales[1], vis_scales[2]
-        for child in self._view.scene.children:
-            if isinstance(child, (visuals.ImageVisual, visuals.VolumeVisual)):
-                child.transform = vispy.visuals.transforms.STTransform(
-                    scale=(sx, sy, sz)
-                )
+        for handle in self._elements.values():
+            if not isinstance(handle, VispyImageHandle):
+                continue
+            child = handle._visual
+            if not isinstance(child, (visuals.ImageVisual, visuals.VolumeVisual)):
+                continue
+            _sx, _sy, _sz = sx, sy, sz
+            # compensate for downsampling so coordinates stay correct
+            # factors are in data order; scene order is (x, y, z) = reversed
+            factors = handle._downsample_factors
+            if factors and any(f > 1 for f in factors):
+                rev = list(reversed(factors))
+                _sx *= rev[0]
+                _sy *= rev[1] if len(rev) > 1 else 1
+                _sz *= rev[2] if len(rev) > 2 else 1
+            child.transform = vispy.visuals.transforms.STTransform(
+                scale=(_sx, _sy, _sz)
+            )
         self.set_range()
 
     def set_range(
@@ -445,13 +481,13 @@ class VispyArrayCanvas(ArrayCanvas):
                 tform = handle._visual.transform
                 if isinstance(tform, vispy.visuals.transforms.STTransform):
                     sx, sy, sz = tform.scale[:3]
-                if len(shape) == 3:
+                if isinstance(handle._visual, visuals.VolumeVisual):
                     # VolumeVisual: data (D,H,W) maps to scene (x=W, y=H, z=D)
                     _x[1] = max(_x[1], shape[2] * sx)
                     _y[1] = max(_y[1], shape[1] * sy)
                     _z[1] = max(_z[1], shape[0] * sz)
                 else:
-                    # ImageVisual: data (H,W) maps to scene (x=W, y=H)
+                    # ImageVisual: data (H,W[,C]) maps to scene (x=W, y=H)
                     _x[1] = max(_x[1], shape[1] * sx)
                     _y[1] = max(_y[1], shape[0] * sy)
 
@@ -552,13 +588,29 @@ class VispyArrayCanvas(ArrayCanvas):
         return CursorType.DEFAULT
 
 
-def _downcast(data: np.ndarray | None) -> np.ndarray | None:
+T = TypeVar("T", bound="np.ndarray | None")
+
+
+def _downcast(data: T) -> T:
     """Downcast >32bit data to 32bit."""
     # downcast to 32bit, preserving int/float
     if data is not None:
         if np.issubdtype(data.dtype, np.integer) and data.dtype.itemsize > 2:
             warnings.warn("Downcasting integer data to uint16.", stacklevel=2)
-            data = data.astype(np.uint16)
+            data = data.astype(np.uint16)  # type: ignore[assignment]
         elif np.issubdtype(data.dtype, np.floating) and data.dtype.itemsize > 4:
-            data = data.astype(np.float32)
+            data = data.astype(np.float32)  # type: ignore[assignment]
     return data
+
+
+def _downcast_and_downsample(
+    data: T, three_d: bool, warn: bool = True
+) -> tuple[T, tuple[int, ...]]:
+    """Downcast >32bit data to 32bit, and downsample GPU texture limits are exceeded."""
+    data = _downcast(data)
+    downsample_factors: tuple[int, ...] = ()
+    if data is not None:
+        maxd = get_max_texture_sizes()[1 if three_d else 0]
+        if maxd is not None:
+            data, downsample_factors = downsample_data(data, maxd, warn=warn)  # type: ignore[assignment]
+    return data, downsample_factors

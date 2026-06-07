@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, Literal, cast
-from weakref import ReferenceType, WeakKeyDictionary, ref
+from functools import lru_cache
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
+from weakref import ReferenceType, WeakValueDictionary, ref
 
 import cmap as _cmap
 import numpy as np
@@ -18,6 +19,7 @@ from ndv._types import (
 )
 from ndv.models._viewer_model import ArrayViewerModel, InteractionMode
 from ndv.views._app import filter_mouse_events
+from ndv.views._util import downsample_data
 from ndv.views.bases import ArrayCanvas, CanvasElement, ImageHandle
 from ndv.views.bases._graphics._canvas_elements import RectangularROIHandle, ROIMoveMode
 
@@ -28,6 +30,22 @@ if TYPE_CHECKING:
 
     from pygfx.materials import ImageBasicMaterial
     from pygfx.resources import Texture
+
+
+def _destroy_pygfx_gpu_resources(world_obj: pygfx.WorldObject) -> None:
+    """Explicitly destroy wgpu GPU objects to free VRAM.
+
+    pygfx relies on Python GC to release wgpu objects, but wgpu's release()
+    alone doesn't free GPU memory on Metal — destroy() must be called first.
+    """
+    geo = getattr(world_obj, "geometry", None)
+    if geo is not None:
+        for attr in ("grid", "positions", "indices"):
+            resource = getattr(geo, attr, None)
+            wgpu_obj = getattr(resource, "_wgpu_object", None)
+            if wgpu_obj is not None:
+                with suppress(Exception):
+                    wgpu_obj.destroy()
 
 
 def _is_inside(bounding_box: np.ndarray | None, pos: Sequence[float]) -> bool:
@@ -47,11 +65,20 @@ class PyGFXImageHandle(ImageHandle):
         self._render = render
         self._grid = cast("Texture", image.geometry.grid)
         self._material = cast("ImageBasicMaterial", image.material)
+        # per-axis downsample strides applied to fit GPU texture limits
+        self._downsample_factors: tuple[int, ...] = ()
 
     def data(self) -> np.ndarray:
         return self._grid.data  # type: ignore [no-any-return]
 
     def set_data(self, data: np.ndarray) -> None:
+        is_three_d = isinstance(self._image, pygfx.Volume)
+        data, self._downsample_factors = _downcast_and_downsample(
+            data,
+            three_d=is_three_d,
+            warn=False,
+            copy=False,
+        )
         # If dimensions are unchanged, reuse the buffer
         if data.shape == self._grid.data.shape:
             self._grid.data[:] = data  # pyright: ignore[reportOptionalSubscript]
@@ -59,10 +86,12 @@ class PyGFXImageHandle(ImageHandle):
         # Otherwise, the size (and maybe number of dimensions) changed
         # - we need a new buffer
         else:
-            self._grid = pygfx.Texture(data, dim=2)
+            dim = 3 if is_three_d else 2
+            self._grid = pygfx.Texture(data, dim=dim)
             self._image.geometry = pygfx.Geometry(grid=self._grid)
             # RGB images (i.e. 3D datasets) cannot have a colormap
-            self._material.map = None if self._is_rgb() else self._cmap.to_pygfx()
+            if not is_three_d:
+                self._material.map = None if self._is_rgb() else self._cmap.to_pygfx()
 
     def visible(self) -> bool:
         return bool(self._image.visible)
@@ -113,6 +142,10 @@ class PyGFXImageHandle(ImageHandle):
     def remove(self) -> None:
         if (par := self._image.parent) is not None:
             par.remove(self._image)
+        # Explicitly destroy wgpu GPU objects to free Metal VRAM.
+        # pygfx does not call destroy() on its own, relying on GC alone,
+        # but wgpu's release() doesn't free GPU memory without destroy().
+        _destroy_pygfx_gpu_resources(self._image)
 
     def get_cursor(self, mme: MouseMoveEvent) -> CursorType | None:
         return None
@@ -126,6 +159,7 @@ class PyGFXRectangle(RectangularROIHandle):
         self,
         render: Callable,
         canvas_to_world: Callable,
+        world_to_canvas: Callable,
         parent: pygfx.WorldObject | None = None,
         *args: Any,
         **kwargs: Any,
@@ -156,6 +190,7 @@ class PyGFXRectangle(RectangularROIHandle):
         self._move_anchor: tuple[float, float] = (0, 0)
         self._render: Callable = render
         self._canvas_to_world: Callable = canvas_to_world
+        self._world_to_canvas: Callable = world_to_canvas
 
         # Initialize
         self.set_fill(_cmap.Color("transparent"))
@@ -290,17 +325,18 @@ class PyGFXRectangle(RectangularROIHandle):
         return False
 
     def on_mouse_press(self, event: MousePressEvent) -> bool:
-        self.set_selected(True)
         # Convert canvas -> world
         world_pos = self._canvas_to_world((event.x, event.y))
-        drag_idx = self._handle_under(world_pos)
+        drag_idx = self._handle_under((event.x, event.y))
         # If a marker is pressed
         if drag_idx is not None:
+            self.set_selected(True)
             opposite_idx = (drag_idx + 2) % 4
             self._move_mode = ROIMoveMode.HANDLE
             self._move_anchor = tuple(self._positions[opposite_idx, :2].copy())
-        # If the rectangle is pressed
-        else:
+        # If the click is inside the rectangle, translate
+        elif self._is_inside_roi(world_pos):
+            self.set_selected(True)
             self._move_mode = ROIMoveMode.TRANSLATE
             self._move_anchor = world_pos
         return False
@@ -325,36 +361,39 @@ class PyGFXRectangle(RectangularROIHandle):
             handles.visible = visible and self.selected()
         self._render()
 
-    def _handle_under(self, pos: Sequence[float]) -> int | None:
+    def _is_inside_roi(self, world_pos: Sequence[float]) -> bool:
+        """Check if a raw world position is inside the ROI rectangle."""
+        p0 = self._positions[0]  # min corner
+        p2 = self._positions[2]  # max corner
+        return bool(p0[0] <= world_pos[0] <= p2[0] and p0[1] <= world_pos[1] <= p2[1])
+
+    def _handle_under(self, canvas_pos: Sequence[float]) -> int | None:
         """Returns an int in [0, 3], or None.
 
-        If an int i, means that the handle at self._positions[i] is at pos.
-        If None, there is no handle at pos.
+        canvas_pos should be in canvas (screen pixel) coordinates.
         """
-        # FIXME: Ideally, Renderer.get_pick_info would do this for us. But it
-        # seems broken.
+        rad2 = self._handle_rad**2
         for i, p in enumerate(self._positions[:-1]):
-            if (p[0] - pos[0]) ** 2 + (p[1] - pos[1]) ** 2 <= self._handle_rad**2:
+            hp = self._world_to_canvas((p[0], p[1], 0))
+            if (hp[0] - canvas_pos[0]) ** 2 + (hp[1] - canvas_pos[1]) ** 2 <= rad2:
                 return i
         return None
 
     def get_cursor(self, mme: MouseMoveEvent) -> CursorType | None:
-        # Convert event pos (on canvas) to world pos
-        world_pos = self._canvas_to_world((mme.x, mme.y))
+        canvas_pos = (mme.x, mme.y)
         # Step 1: Handles
         # Preferred over the rectangle
         # Can only be moved if ROI is selected
-        if (idx := self._handle_under(world_pos)) is not None and self.selected():
+        if (idx := self._handle_under(canvas_pos)) is not None and self.selected():
             # Idx 0 is top left, 2 is bottom right
             if idx % 2 == 0:
                 return CursorType.FDIAG_ARROW
             # Idx 1 is bottom left, 3 is top right
             return CursorType.BDIAG_ARROW
         # Step 2: Entire ROI
-        if self._outline:
-            roi_bb = self._outline.get_bounding_box()
-            if _is_inside(roi_bb, world_pos):
-                return CursorType.ALL_ARROW
+        world_pos = self._canvas_to_world(canvas_pos)
+        if self._is_inside_roi(world_pos):
+            return CursorType.ALL_ARROW
         return None
 
     def remove(self) -> None:
@@ -387,12 +426,21 @@ class GfxArrayCanvas(ArrayCanvas):
         self._camera: pygfx.Camera | None = None
         self._ndim: Literal[2, 3] | None = None
 
-        self._elements = WeakKeyDictionary[pygfx.WorldObject, CanvasElement]()
+        # Maps pygfx WorldObjects (scene children) → CanvasElement handles.
+        # Entries are added by add_image/add_volume/add_bounding_box.
+        # Nobody explicitly removes entries: the controller owns handle
+        # lifetimes via ChannelController.handles/lut_views (for images) and
+        # _roi_view (for ROIs).  When the controller calls handle.remove()
+        # (in _clear_canvas) those refs are dropped, the handle is GC'd, and
+        # the WeakValueDictionary entry is automatically removed.
+        # NB: a WeakKeyDictionary would create a ref cycle here because
+        # each handle (value) holds a strong ref back to its WorldObject (key).
+        self._elements = WeakValueDictionary[pygfx.WorldObject, CanvasElement]()
         self._selection: CanvasElement | None = None
         # Maintain a weak reference to the last ROI created.
         self._last_roi_created: ReferenceType[PyGFXRectangle] | None = None
-
-        self._canvas.add_event_handler(lambda e: self.refresh(), "resize")
+        # Per-axis world-space scales (x, y, z) used for coordinate conversion
+        self._world_scales: tuple[float, float, float] = (1.0, 1.0, 1.0)
 
     def frontend_widget(self) -> Any:
         return self._canvas
@@ -438,11 +486,7 @@ class GfxArrayCanvas(ArrayCanvas):
 
     def add_image(self, data: np.ndarray | None = None) -> PyGFXImageHandle:
         """Add a new Image node to the scene."""
-        if data is not None:
-            # pygfx uses a view of the data without copy, so if we don't
-            # copy it here, the original data will be modified when the
-            # texture changes.
-            data = data.copy()
+        data, downsample_factors = _downcast_and_downsample(data, three_d=False)
         tex = pygfx.Texture(data, dim=2)
         image = pygfx.Image(
             pygfx.Geometry(grid=tex),
@@ -458,15 +502,12 @@ class GfxArrayCanvas(ArrayCanvas):
         # FIXME: I suspect there are more performant ways to refresh the canvas
         # look into it.
         handle = PyGFXImageHandle(image, self.refresh)
+        handle._downsample_factors = downsample_factors
         self._elements[image] = handle
         return handle
 
     def add_volume(self, data: np.ndarray | None = None) -> PyGFXImageHandle:
-        if data is not None:
-            # pygfx uses a view of the data without copy, so if we don't
-            # copy it here, the original data will be modified when the
-            # texture changes.
-            data = data.copy()
+        data, downsample_factors = _downcast_and_downsample(data, three_d=True)
         tex = pygfx.Texture(data, dim=3)
         vol = pygfx.Volume(
             pygfx.Geometry(grid=tex),
@@ -485,6 +526,7 @@ class GfxArrayCanvas(ArrayCanvas):
         # FIXME: I suspect there are more performant ways to refresh the canvas
         # look into it.
         handle = PyGFXImageHandle(vol, self.refresh)
+        handle._downsample_factors = downsample_factors
         self._elements[vol] = handle
         return handle
 
@@ -492,7 +534,8 @@ class GfxArrayCanvas(ArrayCanvas):
         """Add a new Rectangular ROI node to the scene."""
         roi = PyGFXRectangle(
             render=self.refresh,
-            canvas_to_world=self.canvas_to_world,
+            canvas_to_world=self._canvas_to_world_raw,
+            world_to_canvas=self.world_to_canvas,
             parent=self._scene,
         )
         roi.set_visible(False)
@@ -510,12 +553,27 @@ class GfxArrayCanvas(ArrayCanvas):
         # pad to 3 components
         while len(gfx_scales) < 3:
             gfx_scales.append(1.0)
-        sx, sy, sz = gfx_scales[0], gfx_scales[1], gfx_scales[2]
+
+        (sx, sy, sz) = gfx_scales[:3]
+        self._world_scales = (sx, sy, sz)
         has_visuals = False
-        for child in self._scene.children:
-            if isinstance(child, (pygfx.Image, pygfx.Volume)):
-                child.local.scale = (sx, sy, sz)
-                has_visuals = True
+        for handle in self._elements.values():
+            if not isinstance(handle, PyGFXImageHandle):
+                continue
+            child = handle._image
+            if not isinstance(child, (pygfx.Image, pygfx.Volume)):
+                continue
+            _sx, _sy, _sz = sx, sy, sz
+            # compensate for downsampling so coordinates stay correct
+            # factors are in data order; pygfx order is (x, y, z) = reversed
+            factors = handle._downsample_factors
+            if factors and any(f > 1 for f in factors):
+                rev = list(reversed(factors))
+                _sx *= rev[0]
+                _sy *= rev[1] if len(rev) > 1 else 1
+                _sz *= rev[2] if len(rev) > 2 else 1
+            child.local.scale = (_sx, _sy, _sz)
+            has_visuals = True
         if has_visuals:
             self.set_range()
 
@@ -571,25 +629,22 @@ class GfxArrayCanvas(ArrayCanvas):
         if self._camera is not None:
             self._renderer.render(self._scene, self._camera)
 
-    def canvas_to_world(
+    def _canvas_to_world_raw(
         self, pos_xy: tuple[float, float]
     ) -> tuple[float, float, float]:
-        """Map XY canvas position (pixels) to XYZ coordinate in world space."""
-        # Code adapted from:
-        # https://github.com/pygfx/pygfx/pull/753/files#diff-173d643434d575e67f8c0a5bf2d7ea9791e6e03a4e7a64aa5fa2cf4172af05cdR395
+        """Map canvas position to world space without pixel-center offset.
+
+        Returns the raw scene coordinates where pygfx objects live.
+        """
         viewport = pygfx.Viewport.from_viewport_or_renderer(self._renderer)
         if not viewport.is_inside(*pos_xy):
             return (-1, -1, -1)
 
-        # Get position relative to viewport
         pos_rel = (
             pos_xy[0] - viewport.rect[0],
             pos_xy[1] - viewport.rect[1],
         )
-
         vs = viewport.logical_size
-
-        # Convert position to NDC
         x = pos_rel[0] / vs[0] * 2 - 1
         y = -(pos_rel[1] / vs[1] * 2 - 1)
         pos_ndc = (x, y, 0)
@@ -599,12 +654,52 @@ class GfxArrayCanvas(ArrayCanvas):
                 self._camera.world.position, self._camera.camera_matrix
             )
             pos_world = la.vec_unproject(pos_ndc[:2], self._camera.camera_matrix)
-
-            # NB In vispy, (0.5,0.5) is a center of an image pixel, while in pygfx
-            # (0,0) is the center. We conform to vispy's standard.
-            return (pos_world[0] + 0.5, pos_world[1] + 0.5, pos_world[2] + 0.5)
+            return (pos_world[0], pos_world[1], pos_world[2])
         else:
             return (-1, -1, -1)
+
+    def canvas_to_world(
+        self, pos_xy: tuple[float, float]
+    ) -> tuple[float, float, float]:
+        """Map XY canvas position (pixels) to XYZ coordinate in world space.
+
+        Includes a 0.5*scale pixel-center offset so that int(world / scale)
+        gives the correct data index at pixel boundaries. In pygfx, pixel n
+        is centered at world n*scale; in vispy it is at (n+0.5)*scale. The
+        offset aligns both backends so controller code works identically.
+        """
+        pos_world = self._canvas_to_world_raw(pos_xy)
+        if pos_world == (-1, -1, -1):
+            return pos_world
+        wsx, wsy, wsz = self._world_scales
+        return (
+            pos_world[0] + 0.5 * wsx,
+            pos_world[1] + 0.5 * wsy,
+            pos_world[2] + 0.5 * wsz,
+        )
+
+    def world_to_canvas(
+        self, pos_xyz: tuple[float, float, float]
+    ) -> tuple[float, float]:
+        """Map XYZ coordinate in world space to XY canvas position (pixels)."""
+        viewport = pygfx.Viewport.from_viewport_or_renderer(self._renderer)
+        if self._camera is None:
+            return (-1.0, -1.0)
+
+        # Build NDC-to-screen matrix
+        screen_space = pygfx.utils.transform.AffineTransform()
+        screen_space.position = (-1, 1, 0)
+        x_d, y_d = viewport.logical_size
+        screen_space.scale = (2 / x_d, -2 / y_d, 1)
+        ndc_to_screen = screen_space.inverse_matrix
+
+        canvas_pos = la.vec_transform(
+            pos_xyz, ndc_to_screen @ self._camera.camera_matrix
+        )
+        return (
+            canvas_pos[0] + viewport.rect[0],
+            canvas_pos[1] + viewport.rect[1],
+        )
 
     def elements_at(self, pos_xy: tuple[float, float]) -> list[CanvasElement]:
         """Obtains all elements located at pos."""
@@ -614,8 +709,8 @@ class GfxArrayCanvas(ArrayCanvas):
         pos = self.canvas_to_world((pos_xy[0], pos_xy[1]))
         for c in self._scene.children:
             bb = c.get_bounding_box()
-            if _is_inside(bb, pos):
-                elements.append(self._elements[c])
+            if _is_inside(bb, pos) and (elem := self._elements.get(c)) is not None:
+                elements.append(elem)
         return elements
 
     def set_visible(self, visible: bool) -> None:
@@ -631,7 +726,7 @@ class GfxArrayCanvas(ArrayCanvas):
             self._selection.set_selected(False)
             self._selection = None
         canvas_pos = (event.x, event.y)
-        world_pos = self.canvas_to_world(canvas_pos)[:2]
+        world_pos = self._canvas_to_world_raw(canvas_pos)[:2]
 
         # If in CREATE_ROI mode, the new ROI should "start" here.
         if self._viewer.interaction_mode == InteractionMode.CREATE_ROI:
@@ -683,3 +778,37 @@ class GfxArrayCanvas(ArrayCanvas):
             if cursor := vis.get_cursor(event):
                 return cursor
         return CursorType.DEFAULT
+
+
+T = TypeVar("T", bound=np.ndarray | None)
+
+
+@lru_cache(maxsize=1)
+def _get_max_texture_sizes() -> tuple[int | None, int | None]:
+    """Return (max_2d, max_3d) texture dimensions from the wgpu adapter."""
+    try:
+        import wgpu
+
+        adapter = wgpu.gpu.request_adapter_sync()
+        limits = adapter.limits
+        max_2d = limits.get("max-texture-dimension-2d")
+        max_3d = limits.get("max-texture-dimension-3d")
+        return max_2d, max_3d
+    except Exception:
+        return None, None
+
+
+def _downcast_and_downsample(
+    data: T, three_d: bool, *, warn: bool = True, copy: bool = True
+) -> tuple[T, tuple[int, ...]]:
+    downsample_factors: tuple[int, ...] = ()
+    if data is not None:
+        if copy:
+            # pygfx uses a view of the data without copy, so if we don't
+            # copy it here, the original data will be modified when the
+            # texture changes.
+            data = data.copy()
+        maxd = _get_max_texture_sizes()[1 if three_d else 0]
+        if maxd is not None:
+            data, downsample_factors = downsample_data(data, maxd, warn=warn)  # type: ignore[assignment]
+    return data, downsample_factors  # pyright: ignore[reportReturnType]

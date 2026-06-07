@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 ToggleBtnEvent = cast("int", wx.EVT_TOGGLEBUTTON.typeId)  # type: ignore[attr-defined]
 SliderEvent = cast("int", wx.EVT_SLIDER.typeId)  # type: ignore[attr-defined]
 CheckboxEvent = cast("int", wx.EVT_CHECKBOX.typeId)  # type: ignore[attr-defined]
+ComboBoxEvent = cast("int", wx.EVT_COMBOBOX.typeId)  # type: ignore[attr-defined]
 
 
 class _WxSpinner(wx.Panel):
@@ -451,7 +452,8 @@ class WxLUTView(LUTView):
         self._wxwidget.visible.SetLabel(name)
 
     def set_clim_policy(self, policy: ClimPolicy) -> None:
-        self._wxwidget.auto_clim.SetValue(not policy.is_manual)
+        with wx.EventBlocker(self._wxwidget.auto_clim, ToggleBtnEvent):
+            self._wxwidget.auto_clim.SetValue(not policy.is_manual)
         if isinstance(policy, ClimsPercentile):
             self._wxwidget.lower_tail.SetValue(policy.min_percentile)
             self._wxwidget.upper_tail.SetValue(100 - policy.max_percentile)
@@ -647,7 +649,24 @@ class _WxArrayViewer(wx.Frame):
         self.luts = wx.BoxSizer(wx.VERTICAL)
         self.luts_scroll.SetSizer(self.luts)
 
+        # button to toggle shared histogram
+        self.shared_histogram_btn = wx.ToggleButton(self, label="Hist", size=(40, -1))
+        _add_icon(self.shared_histogram_btn, "foundation:graph-bar")
+        self.shared_histogram_btn.SetToolTip("Toggle shared histogram")
+        self.shared_histogram_btn.Hide()
+
+        # button to toggle log scale on shared histogram
+        self.shared_hist_log_btn = wx.ToggleButton(self, label="Log", size=(40, -1))
+        _add_icon(self.shared_hist_log_btn, "mdi:math-log")
+        self.shared_hist_log_btn.SetToolTip("Log scale (base 10)")
+        self.shared_hist_log_btn.Hide()
+
+        # Container for the shared histogram widget
+        self._shared_histogram_widget: wx.Window | None = None
+
         self._btns = wx.BoxSizer(wx.HORIZONTAL)
+        self._btns.Add(self.shared_histogram_btn, 0, wx.ALL, 4)
+        self._btns.Add(self.shared_hist_log_btn, 0, wx.ALL, 4)
         self._btns.AddStretchSpacer()
         self._btns.Add(self.channel_mode_combo, 0, wx.ALL, 4)
         self._btns.Add(self.set_range_btn, 0, wx.ALL, 4)
@@ -678,6 +697,8 @@ class _WxArrayViewer(wx.Frame):
         self.Layout()
 
     def update_lut_scroll_size(self, *_: Any) -> None:
+        if not self or not self.luts_scroll:
+            return
         self.luts_scroll.Layout()
         total_size = self.luts.GetMinSize()
         total_height = total_size.GetHeight()
@@ -709,13 +730,32 @@ class WxArrayView(ArrayView):
         self._wxwidget = wdg = _WxArrayViewer(canvas_widget, parent)
         # Mapping of channel key to LUTViews
         self._luts: dict[ChannelKey, WxLUTView] = {}
+        self._shared_histogram: Any = None
         self._visible_axes: Sequence[AxisKey] = []
+        self._mode_enabled: dict[ChannelMode, bool] = {
+            ChannelMode.GRAYSCALE: True,
+            ChannelMode.COMPOSITE: True,
+            ChannelMode.RGBA: True,
+        }
 
         wdg.dims_sliders.currentIndexChanged.connect(self.currentIndexChanged.emit)
         wdg.channel_mode_combo.Bind(wx.EVT_COMBOBOX, self._on_channel_mode_changed)
         wdg.set_range_btn.Bind(wx.EVT_BUTTON, self._on_reset_zoom_clicked)
         wdg.ndims_btn.Bind(wx.EVT_TOGGLEBUTTON, self._on_ndims_toggled)
         wdg.add_roi_btn.Bind(wx.EVT_TOGGLEBUTTON, self._on_add_roi_toggled)
+        wdg.add_roi_btn.Show(viewer_model.show_roi_button)
+        wdg.shared_histogram_btn.Bind(
+            wx.EVT_TOGGLEBUTTON, self._on_shared_histogram_toggled
+        )
+        wdg.shared_hist_log_btn.Bind(
+            wx.EVT_TOGGLEBUTTON, self._on_shared_hist_log_toggled
+        )
+
+        # Show the shared histogram button if shared mode is enabled
+        if viewer_model.use_shared_histogram:
+            wdg.shared_histogram_btn.Show()
+            for lut in self._luts.values():
+                lut._wxwidget.histogram_btn.Hide()
 
     def _on_channel_mode_changed(self, event: wx.CommandEvent) -> None:
         mode = self._wxwidget.channel_mode_combo.GetValue()
@@ -733,6 +773,21 @@ class WxArrayView(ArrayView):
         self._viewer_model.interaction_mode = (
             InteractionMode.CREATE_ROI if create_roi else InteractionMode.PAN_ZOOM
         )
+
+    def _on_shared_histogram_toggled(self, event: wx.CommandEvent) -> None:
+        toggled = self._wxwidget.shared_histogram_btn.GetValue()
+        if toggled:
+            self.sharedHistogramRequested.emit()
+        if wdg := self._wxwidget._shared_histogram_widget:
+            wdg.Show(toggled)
+        self._wxwidget.shared_hist_log_btn.Show(toggled)
+        self._wxwidget._btns.Layout()
+        self._wxwidget.update_lut_scroll_size()
+
+    def _on_shared_hist_log_toggled(self, event: wx.CommandEvent) -> None:
+        toggled = self._wxwidget.shared_hist_log_btn.GetValue()
+        if self._shared_histogram is not None:
+            self._shared_histogram.set_log_base(10 if toggled else None)
 
     def visible_axes(self) -> Sequence[AxisKey]:
         return self._visible_axes  # no widget to control this yet
@@ -761,7 +816,10 @@ class WxArrayView(ArrayView):
         self._wxwidget.luts.Add(view._wxwidget, 0, wx.EXPAND | wx.BOTTOM, 5)
         self._luts[channel] = view
         # TODO: Reusable synchronization with ViewerModel
-        view._wxwidget.histogram_btn.Show(self._viewer_model.show_histogram_button)
+        if self._viewer_model.use_shared_histogram:
+            view._wxwidget.histogram_btn.Hide()
+        else:
+            view._wxwidget.histogram_btn.Show(self._viewer_model.show_histogram_button)
         view.histogramRequested.connect(self.histogramRequested)
         # Bind to show/hide events for automatic layout updates
         view._wxwidget.Bind(wx.EVT_SHOW, self._wxwidget.update_lut_scroll_size)
@@ -780,6 +838,34 @@ class WxArrayView(ArrayView):
             # Add the histogram widget on the LUT
             lut._add_histogram(widget)
         self._wxwidget.Layout()
+
+    def add_shared_histogram(self, widget: Any) -> None:
+        self._shared_histogram = widget
+        frontend = cast("wx.Window", widget.frontend_widget())
+        old_parent = frontend.GetParent()
+        if old_parent and old_parent is not self._wxwidget:
+            old_parent.Hide()
+        frontend.Reparent(self._wxwidget)
+        if old_parent and old_parent is not self._wxwidget:
+            wx.CallAfter(old_parent.Destroy)
+        frontend.SetMinSize((-1, 120))
+        frontend.Show()
+        self._wxwidget._shared_histogram_widget = frontend
+        # Insert after luts_scroll, before _btns in the main layout
+        sizer = self._wxwidget._inner_sizer
+        for i in range(sizer.GetItemCount()):
+            if sizer.GetItem(i).GetWindow() is self._wxwidget.luts_scroll:
+                sizer.Insert(i + 1, frontend, 0, wx.EXPAND | wx.BOTTOM, 5)
+                break
+        self._wxwidget.update_lut_scroll_size()
+
+    def remove_shared_histogram(self) -> None:
+        if (wdg := self._wxwidget._shared_histogram_widget) is not None:
+            self._wxwidget._inner_sizer.Detach(wdg)
+            wdg.Destroy()
+            self._wxwidget._shared_histogram_widget = None
+            self._shared_histogram = None
+            self._wxwidget.update_lut_scroll_size()
 
     def remove_lut_view(self, lut: LUTView) -> None:
         if lut not in self._luts.values():
@@ -833,6 +919,25 @@ class WxArrayView(ArrayView):
         else:
             self._wxwidget.lut_selector.Hide()
 
+    def set_channel_mode_enabled(self, mode: ChannelMode, enabled: bool) -> None:
+        if self._mode_enabled.get(mode) == enabled:
+            return
+        self._mode_enabled[mode] = enabled
+
+        combo = self._wxwidget.channel_mode_combo
+        current = combo.GetValue()
+        # Keep this list aligned with what this frontend exposes in the combo.
+        # `ChannelMode.COLOR` is intentionally not offered here.
+        ordered_modes = [ChannelMode.GRAYSCALE, ChannelMode.COMPOSITE, ChannelMode.RGBA]
+        items = [m.value for m in ordered_modes if self._mode_enabled.get(m, True)]
+
+        if not items:
+            return
+
+        with wx.EventBlocker(combo, ComboBoxEvent):
+            combo.SetItems(items)
+            combo.SetValue(current if current in items else items[0])
+
     def set_visible(self, visible: bool) -> None:
         if visible:
             self._wxwidget.Show()
@@ -857,6 +962,24 @@ class WxArrayView(ArrayView):
             for lut in self._luts.values():
                 lut._wxwidget.histogram_btn.Show(value)
                 lut._wxwidget.Layout()
+        elif sig_name == "use_shared_histogram":
+            self._wxwidget.shared_histogram_btn.Show(value)
+            if value:
+                for lut in self._luts.values():
+                    lut._wxwidget.histogram_btn.Hide()
+                    lut._wxwidget.Layout()
+                if not self._wxwidget.shared_histogram_btn.GetValue():
+                    self._wxwidget.shared_histogram_btn.SetValue(True)
+                    # Manually trigger since SetValue doesn't fire the event
+                    self._on_shared_histogram_toggled(None)  # type: ignore[arg-type]
+                self._wxwidget.shared_hist_log_btn.Show()
+            else:
+                show_hist = self._viewer_model.show_histogram_button
+                for lut in self._luts.values():
+                    lut._wxwidget.histogram_btn.Show(show_hist)
+                    lut._wxwidget.Layout()
+                self._wxwidget.shared_hist_log_btn.Hide()
+            self._wxwidget._btns.Layout()
         elif sig_name == "show_roi_button":
             self._wxwidget.add_roi_btn.Show(value)
             self._wxwidget._btns.Layout()

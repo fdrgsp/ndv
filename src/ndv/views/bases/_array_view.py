@@ -30,6 +30,7 @@ class ArrayView(Viewable):
     currentIndexChanged = Signal()
     resetZoomClicked = Signal()
     histogramRequested = Signal(int)
+    sharedHistogramRequested = Signal()
     ndimToggleRequested = Signal(bool)
     channelModeChanged = Signal(ChannelMode)
     keyPressed = Signal(KeyPressEvent)
@@ -55,6 +56,10 @@ class ArrayView(Viewable):
 
     @abstractmethod
     def set_channel_mode(self, mode: ChannelMode) -> None: ...
+
+    def set_channel_mode_enabled(self, mode: ChannelMode, enabled: bool) -> None:
+        """Enable/disable a specific channel mode option if supported by frontend."""
+
     @abstractmethod
     def set_data_info(self, data_info: str) -> None: ...
     @abstractmethod
@@ -72,4 +77,10 @@ class ArrayView(Viewable):
         raise NotImplementedError
 
     def remove_histogram(self, widget: Any) -> None:
+        raise NotImplementedError
+
+    def add_shared_histogram(self, widget: Any) -> None:
+        raise NotImplementedError
+
+    def remove_shared_histogram(self) -> None:
         raise NotImplementedError

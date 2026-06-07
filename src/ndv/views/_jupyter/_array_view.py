@@ -445,6 +445,42 @@ class JupyterArrayView(ArrayView):
         )
 
         self._add_roi_btn.observe(self._on_add_roi_button_toggle, names="value")
+        if not viewer_model.show_roi_button:
+            self._add_roi_btn.layout.display = "none"
+
+        # Shared histogram button
+        self._shared_histogram_btn = widgets.ToggleButton(
+            value=False,
+            description="",
+            icon="bar-chart",
+            tooltip="Toggle shared histogram",
+            layout=widgets.Layout(width="40px", display="none"),
+        )
+        self._shared_histogram_btn.observe(
+            self._on_shared_histogram_toggled, names="value"
+        )
+
+        # Shared histogram log button
+        self._shared_hist_log_btn = widgets.ToggleButton(
+            value=False,
+            description="Log",
+            tooltip="Log scale (base 10)",
+            layout=widgets.Layout(width="50px", display="none"),
+        )
+        self._shared_hist_log_btn.observe(
+            self._on_shared_hist_log_toggled, names="value"
+        )
+
+        # Container for the shared histogram widget
+        self._shared_histogram: Any = None
+        self._shared_histogram_container = widgets.HBox(
+            layout=widgets.Layout(display="none", height="120px"),
+        )
+
+        if viewer_model.use_shared_histogram:
+            self._shared_histogram_btn.layout.display = "block"
+            for lut in self._luts.values():
+                lut._histogram_btn.layout.display = "none"
 
         # LAYOUT
 
@@ -465,12 +501,14 @@ class JupyterArrayView(ArrayView):
 
         self._btns_box = widgets.HBox(
             [
+                self._shared_histogram_btn,
+                self._shared_hist_log_btn,
+                widgets.Box(layout=widgets.Layout(flex="1")),
                 self._channel_mode_combo,
                 self._ndims_btn,
                 self._add_roi_btn,
                 self._reset_zoom_btn,
             ],
-            layout=widgets.Layout(justify_content="flex-end"),
         )
         self.layout = widgets.VBox(
             [
@@ -479,6 +517,7 @@ class JupyterArrayView(ArrayView):
                 self._hover_info_label,
                 self._slider_box,
                 self._luts_box,
+                self._shared_histogram_container,
                 self._btns_box,
             ],
             layout=widgets.Layout(width=width),
@@ -557,6 +596,8 @@ class JupyterArrayView(ArrayView):
         self._luts[channel] = wdg
 
         wdg.histogramRequested.connect(self.histogramRequested)
+        if self._viewer_model.use_shared_histogram:
+            wdg._histogram_btn.layout.display = "none"
         layout.children = (*layout.children, wdg.layout)
         return wdg
 
@@ -598,8 +639,28 @@ class JupyterArrayView(ArrayView):
             InteractionMode.CREATE_ROI if change["new"] else InteractionMode.PAN_ZOOM
         )
 
+    def _on_shared_histogram_toggled(self, change: dict[str, Any]) -> None:
+        toggled = change["new"]
+        if toggled:
+            self.sharedHistogramRequested.emit()
+        self._shared_histogram_container.layout.display = "flex" if toggled else "none"
+        self._shared_hist_log_btn.layout.display = "block" if toggled else "none"
+
+    def _on_shared_hist_log_toggled(self, change: dict[str, Any]) -> None:
+        if self._shared_histogram is not None:
+            self._shared_histogram.set_log_base(10 if change["new"] else None)
+
     def remove_histogram(self, widget: Any) -> None:
         """Remove a histogram widget from the viewer."""
+
+    def add_shared_histogram(self, widget: Any) -> None:
+        self._shared_histogram = widget
+        frontend = widget.frontend_widget()
+        self._shared_histogram_container.children = (frontend,)
+
+    def remove_shared_histogram(self) -> None:
+        self._shared_histogram_container.children = ()
+        self._shared_histogram = None
 
     def frontend_widget(self) -> Any:
         return self.layout
@@ -644,6 +705,19 @@ class JupyterArrayView(ArrayView):
             # Note that "block" displays the icon better than "flex"
             for lut in self._luts.values():
                 lut._histogram_btn.layout.display = "block" if value else "none"
+        elif sig_name == "use_shared_histogram":
+            self._shared_histogram_btn.layout.display = "block" if value else "none"
+            if value:
+                for lut in self._luts.values():
+                    lut._histogram_btn.layout.display = "none"
+                if not self._shared_histogram_btn.value:
+                    self._shared_histogram_btn.value = True
+                self._shared_hist_log_btn.layout.display = "block"
+            else:
+                show_hist = self._viewer_model.show_histogram_button
+                for lut in self._luts.values():
+                    lut._histogram_btn.layout.display = "block" if show_hist else "none"
+                self._shared_hist_log_btn.layout.display = "none"
         elif sig_name == "show_roi_button":
             self._add_roi_btn.layout.display = "flex" if value else "none"
         elif sig_name == "show_channel_mode_selector":

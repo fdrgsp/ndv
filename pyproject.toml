@@ -49,19 +49,19 @@ jupyter = [
     "jupyter_rfb >=0.3.3",
     "glfw >=2.4",
 ]
-pyqt = ["pyqt6 >=6.7", "qtpy >=2", "superqt[iconify] >=0.7.2"]
+pyqt = ["pyqt6 >=6.7", "qtpy >=2", "superqt[iconify] >=0.8.1"]
 pyside = [
     # defer to superqt's pyside6 restrictions
-    "superqt[iconify,pyside6] >=0.8.0",
+    "superqt[iconify,pyside6] >=0.8.1",
     # note: still may need to fix windows https://github.com/pyapp-kit/ndv/issues/59
     "pyside6 >=6.7",
     "qtpy >=2",
 ]
 wxpython = ["pyconify>=0.2.1", "wxpython >=4.2.2"]
 
-# Supported Canavs backends
+# Supported Canvas backends
 vispy = ["vispy>=0.16", "pyopengl >=3.1"]
-pygfx = ["pygfx>=0.16.0", "rendercanvas>=2.6.1", "wgpu>=0.31.0"]
+pygfx = ["pygfx>=0.16.0", "rendercanvas>=2.6.2", "wgpu>=0.31.0"]
 
 # ready to go bundles with pygfx
 qt = ["ndv[pygfx,pyqt]", "imageio[tifffile] >=2.20"]
@@ -210,6 +210,7 @@ testpaths = ["tests"]
 filterwarnings = [
     "error",
     "ignore:Method has been garbage collected::superqt",
+    "ignore:Error fetching icon:UserWarning",
     # occasionally happens on linux CI with vispy
     "ignore:Got wrong number of dimensions",
     "ignore:Unable to import recommended hash",

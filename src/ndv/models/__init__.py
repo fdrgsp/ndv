@@ -33,3 +33,11 @@ __all__ = [
     "RingBuffer",
     "RingBufferWrapper",
 ]
+
+# Import NGFFWrapper if yaozarrs is available
+try:
+    from ._data_wrapper import NGFFWrapper  # noqa: F401
+
+    __all__.append("NGFFWrapper")
+except ImportError:
+    pass

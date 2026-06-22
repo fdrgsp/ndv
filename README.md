@@ -68,6 +68,7 @@ For more information, and complete API reference, see the
     - `torch.Tensor` (supports named dimensions)
     - `xarray.DataArray` (supports named dimensions)
     - `zarr` (named dimensions WIP)
+    - `ome-zarr` (OME-NGFF v0.4/v0.5 multiscale images and HCS Plates)
 
 See examples for each of these array types in
 [examples](https://github.com/pyapp-kit/ndv/tree/main/examples)

@@ -354,6 +354,11 @@ class PlotWidget(scene.Widget):
             domain = cast("tuple[float, float]", self.yaxis.axis.domain)
         # Estimate the widest tick label (ticks are integers on a histogram)
         max_val = round(max(abs(domain[0]), abs(domain[1])))
+        ticker = self.yaxis.axis.ticker
+        if isinstance(ticker, LogTicker):
+            # The domain is log-transformed, while the labels show original
+            # counts (for example, domain 3 -> label 1000 in base 10).
+            max_val = round(ticker._log_base**max_val - 1)
         label = str(max_val)
         # ~5px per character + padding for tick marks
         needed = len(label) * 5 + 10

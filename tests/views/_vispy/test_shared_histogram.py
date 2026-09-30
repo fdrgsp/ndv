@@ -254,12 +254,12 @@ def test_highlight() -> None:
     assert not hist._highlight_lines["ch0"].visible
 
 
-# ---------- Legend ----------
+# ---------- Channel names ----------
 
 
 @pytest.mark.usefixtures("any_app")
-def test_legend_visibility() -> None:
-    """Legend entries match channel visibility and names."""
+def test_channel_names_are_stored_without_a_legend() -> None:
+    """Names remain backend state but are not redundantly drawn on the plot."""
     hist = VispySharedHistogramCanvas()
     counts = np.array([5, 10, 15])
     edges = np.array([0, 33, 66, 100], dtype=float)
@@ -271,12 +271,19 @@ def test_legend_visibility() -> None:
 
     ch0 = hist._channels[0]
     ch1 = hist._channels[1]
-    assert ch0.legend_text.text == "● FITC"
-    assert ch1.legend_text.text == "● DAPI"
+    assert ch0.name == "FITC"
+    assert ch1.name == "DAPI"
+    assert not hasattr(ch0, "legend_text")
 
-    # Hiding a channel hides its legend
     hist.set_channel_visible(0, False)
-    assert not ch0.legend_text.visible
+    assert not ch0.visible
 
-    hist.set_channel_visible(0, True)
-    assert ch0.legend_text.visible
+
+@pytest.mark.usefixtures("any_app")
+def test_log_tick_labels_have_enough_width() -> None:
+    """Size the y-axis from displayed counts, not log-transformed values."""
+    hist = VispySharedHistogramCanvas()
+    hist.set_channel_data(0, np.array([10_000]), np.array([0, 1], dtype=float))
+    hist.set_log_base(10)
+
+    assert hist.plot._yaxis_width >= 34

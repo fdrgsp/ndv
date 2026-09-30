@@ -82,7 +82,7 @@ class PyGFXSharedHistogramCanvas(SharedHistogramCanvas):
         self.margin_left = 10
         self.margin_bottom = 20
         self.margin_right = 4
-        self.margin_top = 14  # room for legend text
+        self.margin_top = 14  # room for the maximum-count label
 
         # ------------ PyGFX Canvas ------------ #
         cls = rendercanvas_class()
@@ -110,7 +110,7 @@ class PyGFXSharedHistogramCanvas(SharedHistogramCanvas):
         self._x_cam = _OrthographicCamera(maintain_aspect=False, width=1, height=1)
         self._controller.add_camera(self._x_cam, include_state={"x", "width"})
 
-        # Scene 3: static overlays (y-label, legend) rendered full-canvas
+        # Scene 3: static y-axis overlay rendered full-canvas
         # No background — this renders on top of the plot and x-axis
         self._y_scene = pygfx.Scene()
         self._y_cam = pygfx.OrthographicCamera(maintain_aspect=False, width=1, height=1)
@@ -145,9 +145,6 @@ class PyGFXSharedHistogramCanvas(SharedHistogramCanvas):
             anchor="bottom-left",
         )
         self._y_scene.add(self._y_max_label)
-
-        # Legend labels (also in y_scene for screen-space rendering)
-        self._legend_labels: list[pygfx.MultiText] = []
 
         self.refresh()
 
@@ -253,7 +250,6 @@ class PyGFXSharedHistogramCanvas(SharedHistogramCanvas):
             ch.gamma_handle,
         ):
             obj.visible = visible
-        self._update_legend()
         self._auto_range_y_only()
 
     def set_channel_clims(self, key: ChannelKey, clims: tuple[float, float]) -> None:
@@ -285,7 +281,6 @@ class PyGFXSharedHistogramCanvas(SharedHistogramCanvas):
             self._scene.remove(obj)
         if (hl := self._highlight_lines.pop(key, None)) is not None:
             self._scene.remove(hl)
-        self._update_legend()
         self._auto_range()
 
     def set_channel_name(self, key: ChannelKey, name: str) -> None:
@@ -293,7 +288,6 @@ class PyGFXSharedHistogramCanvas(SharedHistogramCanvas):
         if ch is None:
             return
         ch.name = name
-        self._update_legend()
 
     def set_clim_bounds(self, bounds: tuple[float | None, float | None]) -> None:
         self._clim_bounds = bounds
@@ -481,7 +475,6 @@ class PyGFXSharedHistogramCanvas(SharedHistogramCanvas):
             gamma_handle=gamma_handle,
         )
         self._channels[key] = ch
-        self._update_legend()
         return ch
 
     def _apply_channel_colors(self, key: object) -> None:
@@ -594,7 +587,6 @@ class PyGFXSharedHistogramCanvas(SharedHistogramCanvas):
         if x and y:
             self._resize(x, y)
         self._refresh_all_lut_visuals()
-        self._update_legend()
 
     def _auto_range_y_only(self) -> None:
         """Update y range only, preserving current x pan/zoom."""
@@ -609,7 +601,6 @@ class PyGFXSharedHistogramCanvas(SharedHistogramCanvas):
             c_h = max(self._canvas.get_logical_size()[1], 1)
             self._update_y_ruler(c_w, c_h, y[1])
         self._refresh_all_lut_visuals()
-        self._update_legend()
         self.refresh()
 
     def _visible_x_range(self) -> tuple[float, float] | None:
@@ -668,46 +659,6 @@ class PyGFXSharedHistogramCanvas(SharedHistogramCanvas):
         else:
             self._y_max_label.set_text("")
 
-    def _update_legend(self) -> None:
-        """Position legend entries horizontally at the top-right."""
-        c_w = max(self._canvas.get_logical_size()[0], 1)
-        c_h = max(self._canvas.get_logical_size()[1], 1)
-
-        # Collect visible channel entries
-        entries: list[tuple[str, tuple]] = []
-        for ch in self._channels.values():
-            if ch.visible and ch.name:
-                r, g, b = ch.color[:3]
-                a = ch.color[3] if len(ch.color) > 3 else 1.0
-                entries.append((f"{ch.name}", (r, g, b, a)))
-
-        # Ensure we have enough legend labels
-        while len(self._legend_labels) < len(entries):
-            label = pygfx.MultiText(
-                text="",
-                material=pygfx.TextMaterial(color="white", aa=True, weight_offset=-300),
-                screen_space=True,
-                font_size=10,
-                anchor="bottom-right",
-            )
-            self._y_scene.add(label)
-            self._legend_labels.append(label)
-
-        # Position entries right-to-left, inline with y-max label
-        x_frac = (c_w - 8) / c_w
-        # Same y as y_max_label (both use "bottom-*" anchor now)
-        y_frac = (c_h - self.margin_top) / c_h + 0.005
-        for i, label in enumerate(self._legend_labels):
-            if i < len(entries):
-                text, color = entries[len(entries) - 1 - i]
-                label.set_text(text)
-                label.material.color = color
-                label.local.position = (x_frac, y_frac, 0)
-                label.visible = True
-                x_frac -= (len(text) * 6 + 6) / c_w
-            else:
-                label.visible = False
-
     def _animate(self) -> None:
         rect = self._canvas.get_logical_size()
         if rect != self._size:
@@ -722,7 +673,6 @@ class PyGFXSharedHistogramCanvas(SharedHistogramCanvas):
             y_range = self._compute_y_range()
             max_val = y_range[1] if y_range else 0
             self._update_y_ruler(max(rect[0], 1), max(rect[1], 1), max_val)
-            self._update_legend()
 
         # Re-downsample when camera pans/zooms
         cam_state = (self._camera.local.x, self._camera.width)
@@ -748,7 +698,7 @@ class PyGFXSharedHistogramCanvas(SharedHistogramCanvas):
             ),
             flush=False,
         )
-        # Render the y-axis / legend overlay
+        # Render the y-axis overlay
         self._renderer.render(self._y_scene, self._y_cam, flush=False)
         self._renderer.flush()
 

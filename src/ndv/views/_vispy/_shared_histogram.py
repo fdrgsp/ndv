@@ -48,7 +48,6 @@ class _ChannelVisuals:
     outline: scene.LinePlot  # pyright: ignore[reportInvalidTypeForm]
     lut_line: scene.LinePlot  # pyright: ignore[reportInvalidTypeForm]
     gamma_handle: scene.Markers  # pyright: ignore[reportInvalidTypeForm]
-    legend_text: scene.Text  # pyright: ignore[reportInvalidTypeForm]
     # per-channel state
     color: tuple = (1, 1, 1, 1)
     clims: tuple[float, float] | None = None
@@ -97,7 +96,6 @@ class VispySharedHistogramCanvas(SharedHistogramCanvas):
 
         self._has_initial_range = False
         self._redownsampling = False
-        self._canvas.events.resize.connect(self._on_canvas_resize)
         self._canvas.events.draw.connect(self._on_draw)
         self._last_cam_rect: tuple[float, float] = (0.0, 0.0)  # (left, right)
 
@@ -167,8 +165,6 @@ class VispySharedHistogramCanvas(SharedHistogramCanvas):
         ch.outline.visible = visible
         ch.lut_line.visible = visible
         ch.gamma_handle.visible = visible
-        ch.legend_text.visible = visible
-        self._update_legend_positions()
         self._auto_range_y_only()
 
     def set_channel_clims(self, key: ChannelKey, clims: tuple[float, float]) -> None:
@@ -194,12 +190,10 @@ class VispySharedHistogramCanvas(SharedHistogramCanvas):
             ch.outline,
             ch.lut_line,
             ch.gamma_handle,
-            ch.legend_text,
         ):
             visual.parent = None
         if (hl := self._highlight_lines.pop(key, None)) is not None:
             hl.parent = None
-        self._update_legend_positions()
         self._auto_range()
 
     def set_channel_name(self, key: ChannelKey, name: str) -> None:
@@ -207,8 +201,6 @@ class VispySharedHistogramCanvas(SharedHistogramCanvas):
         if ch is None:
             return
         ch.name = name
-        ch.legend_text.text = name
-        self._update_legend_positions()
 
     def set_log_base(self, base: float | None) -> None:
         if base == self._log_base:
@@ -354,16 +346,6 @@ class VispySharedHistogramCanvas(SharedHistogramCanvas):
         gamma_handle.visible = False
         gamma_handle.order = -2
 
-        legend_text = scene.Text(
-            text="",
-            color="w",
-            font_size=8,
-            anchor_x="right",
-            anchor_y="top",
-            parent=self._canvas.scene,
-        )
-        legend_text.order = -4
-
         self.plot._view.add(area_mesh)
         self.plot._view.add(outline)
         self.plot._view.add(lut_line)
@@ -374,18 +356,12 @@ class VispySharedHistogramCanvas(SharedHistogramCanvas):
             outline=outline,
             lut_line=lut_line,
             gamma_handle=gamma_handle,
-            legend_text=legend_text,
         )
         self._channels[key] = ch
-        self._update_legend_positions()
         return ch
 
     def _apply_channel_colors(self, key: object) -> None:
         """Apply color to all visuals for a channel."""
-        ch = self._channels[key]
-        r, g, b = ch.color[:3]
-        a = ch.color[3] if len(ch.color) > 3 else 1.0
-        ch.legend_text.color = (r, g, b, a)
         # Re-render area and LUT visuals with new color
         self._update_channel_area(key)
         self._update_lut_visuals(key)
@@ -480,7 +456,6 @@ class VispySharedHistogramCanvas(SharedHistogramCanvas):
             self.plot.camera.set_range(x=x, y=y, margin=1e-30)
             self.plot.update_yaxis_width(y)
         self._refresh_all_lut_visuals()
-        self._update_legend_positions()
 
     def _auto_range_y_only(self) -> None:
         """Update y range only, preserving current x pan/zoom."""
@@ -492,7 +467,6 @@ class VispySharedHistogramCanvas(SharedHistogramCanvas):
             )
             self.plot.update_yaxis_width(y)
         self._refresh_all_lut_visuals()
-        self._update_legend_positions()
 
     def _visible_x_range(self) -> tuple[float, float] | None:
         """Get the currently visible x-range from the camera."""
@@ -545,23 +519,6 @@ class VispySharedHistogramCanvas(SharedHistogramCanvas):
                 r = self.plot.camera.rect
                 self._last_cam_rect = (r.left, r.right)
                 self._redownsampling = False
-
-    def _on_canvas_resize(self, event: Any = None) -> None:
-        self._update_legend_positions()
-
-    def _update_legend_positions(self) -> None:
-        """Position legend entries horizontally at the top-right."""
-        # Build entries right-to-left so last channel is rightmost
-        canvas_w = self._canvas.size[0]
-        x_offset = canvas_w - 8
-        for ch in reversed(list(self._channels.values())):
-            if not ch.visible or not ch.name:
-                ch.legend_text.visible = False
-                continue
-            ch.legend_text.visible = True
-            ch.legend_text.text = f"● {ch.name}"
-            ch.legend_text.pos = (x_offset, 14)
-            x_offset -= len(ch.name) * 7 + 18  # approximate width
 
     def _find_nearest_grabbable(
         self, pos: tuple[float, float], tolerance: int = 5

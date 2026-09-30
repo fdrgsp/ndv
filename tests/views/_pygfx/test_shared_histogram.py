@@ -274,12 +274,12 @@ def test_highlight() -> None:
     assert not hist._highlight_lines["ch0"].visible
 
 
-# ---------- Legend ----------
+# ---------- Channel names ----------
 
 
 @pytest.mark.usefixtures("any_app")
-def test_legend_names() -> None:
-    """Legend entries track channel names."""
+def test_channel_names_are_stored_without_a_legend() -> None:
+    """Names remain backend state but are not redundantly drawn on the plot."""
     hist = PyGFXSharedHistogramCanvas()
     counts = np.array([5, 10, 15])
     edges = np.array([0, 33, 66, 100], dtype=float)
@@ -293,6 +293,7 @@ def test_legend_names() -> None:
     ch1 = hist._channels[1]
     assert ch0.name == "FITC"
     assert ch1.name == "DAPI"
+    assert not hasattr(hist, "_legend_labels")
 
     # Hiding a channel updates state
     hist.set_channel_visible(0, False)

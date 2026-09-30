@@ -81,6 +81,18 @@ def test_histogram(viewer: QtArrayView) -> None:
     assert lut.histogram is not None
 
 
+def test_shared_histogram_is_below_controls(viewer: QtArrayView) -> None:
+    """The shared histogram follows the complete viewer control row."""
+    histogram = Mock()
+    frontend = QWidget()
+    histogram.frontend_widget.return_value = frontend
+
+    viewer.add_shared_histogram(histogram)
+
+    layout = viewer._qwidget._left_layout
+    assert layout.indexOf(frontend) > layout.indexOf(viewer._qwidget._btns)
+
+
 def test_play_btn(viewer: QtArrayView, qtbot: QtBot) -> None:
     """Test the play button functionality on the array view."""
     dims_wdg = viewer._qwidget.dims_sliders

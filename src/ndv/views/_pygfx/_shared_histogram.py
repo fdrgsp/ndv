@@ -319,12 +319,12 @@ class PyGFXSharedHistogramCanvas(SharedHistogramCanvas):
             active_keys.add(key)
             line = self._highlight_lines.get(key)
             if line is None:
-                ch = self._channels.get(key)
-                color = (*ch.color[:3], 0.5) if ch else (1.0, 1.0, 0.2, 0.5)
                 line = pygfx.Line(
                     geometry=pygfx.Geometry(positions=self._highlight_unit_pos),
                     material=pygfx.LineMaterial(
-                        color=color, dash_pattern=[4, 4], thickness=1
+                        color=(1.0, 1.0, 1.0, 0.9),
+                        dash_pattern=[4, 4],
+                        thickness=2,
                     ),
                 )
                 self._scene.add(line)

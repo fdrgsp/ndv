@@ -482,7 +482,7 @@ class ArrayViewer:
             self._canvas.set_scales(new.visible_scales)
             self._synchronize_roi()
 
-        if old.channel_axis != new.channel_axis:
+        if old.channel_axis != new.channel_axis or old.data_coords != new.data_coords:
             self._push_fallback_channel_names()
 
         if old.summary_info != new.summary_info:
@@ -508,6 +508,8 @@ class ArrayViewer:
             name = self._fallback_channel_name(key)
             for view in ctrl.lut_views:
                 view.set_fallback_name(name)
+            if link := self._shared_histogram_links.get(key):
+                link.set_fallback_name(name)
 
     def _update_lut_visibility(self, mode: ChannelMode) -> None:
         """Update LUT view visibility based on channel mode."""
@@ -938,6 +940,7 @@ class _SharedHistogramLink:
         self._key = key
         self._ctrl = ctrl
         self._hist = hist
+        self._fallback_name = fallback_name
         model = ctrl.lut_model
 
         ctrl.stats_updated.connect(self._on_stats)
@@ -952,7 +955,7 @@ class _SharedHistogramLink:
         hist.set_channel_color(key, model.cmap.color_stops[-1].color.rgba)
         hist.set_channel_visible(key, model.visible)
         hist.set_channel_gamma(key, model.gamma)
-        hist.set_channel_name(key, model.name or fallback_name)
+        hist.set_channel_name(key, model.name or self._fallback_name)
         if model.clim_bounds != (None, None):
             hist.set_clim_bounds(model.clim_bounds)
         if ctrl._last_clims is not None:
@@ -980,7 +983,12 @@ class _SharedHistogramLink:
         self._hist.set_channel_gamma(self._key, gamma)
 
     def _on_name(self, name: str) -> None:
-        self._hist.set_channel_name(self._key, name)
+        self._hist.set_channel_name(self._key, name or self._fallback_name)
+
+    def set_fallback_name(self, name: str) -> None:
+        """Update the data-derived name without overriding an explicit LUT name."""
+        self._fallback_name = name
+        self._hist.set_channel_name(self._key, self._ctrl.lut_model.name or name)
 
     def _on_clim_bounds(self, bounds: tuple[float | None, float | None]) -> None:
         self._hist.set_clim_bounds(bounds)

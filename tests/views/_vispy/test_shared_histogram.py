@@ -245,7 +245,10 @@ def test_highlight() -> None:
     assert not hist._highlight_lines
 
     hist.highlight({"ch0": 50})
-    assert hist._highlight_lines["ch0"].visible
+    line = hist._highlight_lines["ch0"]
+    assert line.visible
+    assert line.width == 2
+    assert np.allclose(line.color, (1, 1, 1, 0.9))
 
     hist.highlight({})
     assert not hist._highlight_lines["ch0"].visible

@@ -25,6 +25,33 @@ if TYPE_CHECKING:
 SHAPE = (10, 3, 10, 10)
 
 
+class _DynamicChannelArray:
+    """Small array-like whose coordinate labels can grow/change in place."""
+
+    def __init__(self) -> None:
+        self._data = np.zeros((3, 10, 10), dtype=np.uint8)
+        self.dims = ("c", "y", "x")
+        self.coords = {
+            "c": ["Cy5", 1, 2],
+            "y": range(10),
+            "x": range(10),
+        }
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self._data.shape
+
+    @property
+    def dtype(self) -> np.dtype:
+        return self._data.dtype
+
+    def __array__(self) -> np.ndarray:
+        return self._data
+
+    def __getitem__(self, key: Any) -> np.ndarray:
+        return self._data[key]
+
+
 def _make_img_handle() -> MagicMock:
     handle = MagicMock(spec=ImageHandle)
     handle.data.return_value = np.zeros((10, 10)).astype(np.uint8)
@@ -143,6 +170,31 @@ def test_initial_state_set_on_connection() -> None:
     assert mock_hist.set_channel_visible.call_count >= len(ctrl._lut_controllers)
     # set_channel_gamma should have been called
     assert mock_hist.set_channel_gamma.call_count >= len(ctrl._lut_controllers)
+
+
+@no_type_check
+@_patch_views
+def test_coordinate_changes_refresh_channel_names() -> None:
+    """Late channel metadata updates both LUT and shared-histogram labels."""
+    data = _DynamicChannelArray()
+    ctrl = ArrayViewer(channel_axis="c", channel_mode="composite")
+    ctrl._async = False
+    ctrl.data = data
+    ctrl._add_shared_histogram()
+    mock_hist = ctrl._shared_histogram
+
+    for lut_ctrl in ctrl._lut_controllers.values():
+        for view in lut_ctrl.lut_views:
+            view.set_fallback_name.reset_mock()
+    mock_hist.set_channel_name.reset_mock()
+
+    data.coords["c"] = ["Cy5", "DAPI", "FITC"]
+    ctrl.data_wrapper.dims_changed.emit()
+
+    for key, expected in enumerate(("Cy5", "DAPI", "FITC")):
+        for view in ctrl._lut_controllers[key].lut_views:
+            view.set_fallback_name.assert_called_with(expected)
+        mock_hist.set_channel_name.assert_any_call(key, expected)
 
 
 @no_type_check

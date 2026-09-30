@@ -239,9 +239,11 @@ class VispySharedHistogramCanvas(SharedHistogramCanvas):
                 line.visible = False
         for key, value in channel_values.items():
             if (line := self._highlight_lines.get(key)) is None:
-                ch = self._channels.get(key)
-                color = (*ch.color[:3], 0.5) if ch else (1, 1, 0.2, 0.5)
-                line = scene.Line(pos=self._highlight_unit_pos, color=color, width=1)
+                line = scene.Line(
+                    pos=self._highlight_unit_pos,
+                    color=(1, 1, 1, 0.9),
+                    width=2,
+                )
                 self.plot._view.add(line)
                 line.transform = scene.transforms.STTransform()
                 self._highlight_lines[key] = line

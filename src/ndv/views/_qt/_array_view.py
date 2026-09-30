@@ -768,14 +768,14 @@ class _QArrayViewer(QWidget):
         info.addWidget(self.hover_info_label)
 
         left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setSpacing(2)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.addWidget(self._info_widget)
-        left_layout.addWidget(canvas_widget, 1)
-        left_layout.addWidget(self.dims_sliders)
-        left_layout.addWidget(self.luts)
-        left_layout.addWidget(self._btns)
+        self._left_layout = QVBoxLayout(left)
+        self._left_layout.setSpacing(2)
+        self._left_layout.setContentsMargins(0, 0, 0, 0)
+        self._left_layout.addWidget(self._info_widget)
+        self._left_layout.addWidget(canvas_widget, 1)
+        self._left_layout.addWidget(self.dims_sliders)
+        self._left_layout.addWidget(self.luts)
+        self._left_layout.addWidget(self._btns)
 
         self.splitter = QSplitter(Qt.Orientation.Vertical, self)
         self.splitter.addWidget(left)
@@ -881,11 +881,10 @@ class QtArrayView(ArrayView):
         qwidget.setFixedHeight(120)
         qwidget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._qwidget._shared_histogram_widget = qwidget
-        # Add after the LUTs content widget but before the btn_row,
-        # so it always stays at the bottom regardless of LUT visibility
-        luts_layout = cast("QVBoxLayout", self._qwidget.luts.layout())
-        # _content is at index 0, insert histogram right after it
-        luts_layout.insertWidget(1, qwidget)
+        # Keep the histogram below the complete control row.  The button layout
+        # is moved out of the LUT collapsible into _btns during construction,
+        # so inserting into the LUT layout would place the plot above it.
+        self._qwidget._left_layout.addWidget(qwidget)
 
     def remove_shared_histogram(self) -> None:
         if (wdg := self._qwidget._shared_histogram_widget) is not None:

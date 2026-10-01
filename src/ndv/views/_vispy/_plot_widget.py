@@ -81,8 +81,10 @@ if TYPE_CHECKING:
 
 __all__ = ["LogTicker", "PlotWidget"]
 
-# Quantized width steps for axis sizing (only grows, snaps to these values)
-_AXIS_WIDTH_STEPS = (24, 34, 44, 54)
+# Quantized width steps for axis sizing.  Vispy's text glyphs can extend beyond
+# their nominal font-size box (especially on high-DPI displays), so keep enough
+# headroom for the label, tick, and label margin.
+_AXIS_WIDTH_STEPS = (24, 34, 44, 54, 64, 74)
 
 
 class LogTicker(Ticker):
@@ -360,8 +362,10 @@ class PlotWidget(scene.Widget):
             # counts (for example, domain 3 -> label 1000 in base 10).
             max_val = round(ticker._log_base**max_val - 1)
         label = str(max_val)
-        # ~5px per character + padding for tick marks
-        needed = len(label) * 5 + 10
+        # Allow ~8 px per glyph plus room for the tick and tick-label margin.
+        # The earlier 5 px estimate left four-digit labels partially outside a
+        # 34 px widget on high-DPI displays, clipping their leading digits.
+        needed = len(label) * 8 + 18
         # Snap to the nearest quantized step
         for step in _AXIS_WIDTH_STEPS:
             if step >= needed:

@@ -286,4 +286,6 @@ def test_log_tick_labels_have_enough_width() -> None:
     hist.set_channel_data(0, np.array([10_000]), np.array([0, 1], dtype=float))
     hist.set_log_base(10)
 
-    assert hist.plot._yaxis_width >= 34
+    # Four displayed digits need a 54 px gutter once the tick and text margin
+    # are included; 34 px clips the leading digits on high-DPI displays.
+    assert hist.plot._yaxis_width >= 54

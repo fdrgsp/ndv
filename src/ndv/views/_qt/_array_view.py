@@ -185,9 +185,29 @@ class _QDimensionSlider(QSlider):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._wheel_remainder = 0
+        self._handle_width = 0
         # Apply this directly to the leaf widget so an application's proxy style
         # cannot replace the rectangular handle with its generic slider handle.
-        self.setStyleSheet(SLIDER_STYLE)
+        self.rangeChanged.connect(self._update_handle_width)
+        self._update_handle_width()
+
+    def _update_handle_width(self, *_args: object) -> None:
+        """Give each discrete position an equal-width segment of the track."""
+        count = self.maximum() - self.minimum() + 1
+        available = self.contentsRect().width()
+        if count <= 0 or available <= 0:  # pragma: no cover - invalid Qt geometry
+            return
+        handle_width = max(1, round(available / count))
+        if handle_width == self._handle_width:
+            return
+        self._handle_width = handle_width
+        self.setStyleSheet(
+            f"{SLIDER_STYLE}\nQSlider::handle:horizontal {{ width: {handle_width}px; }}"
+        )
+
+    def resizeEvent(self, event: Any) -> None:
+        super().resizeEvent(event)
+        self._update_handle_width()
 
     def wheelEvent(self, event: QWheelEvent | None) -> None:
         if event is None:  # pragma: no cover - Qt never sends a null event

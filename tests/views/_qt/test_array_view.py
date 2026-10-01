@@ -6,7 +6,7 @@ from unittest.mock import Mock
 from pytest import fixture
 from qtpy.QtCore import QEvent, QPoint, QPointF, Qt
 from qtpy.QtGui import QKeyEvent, QWheelEvent
-from qtpy.QtWidgets import QApplication, QWidget
+from qtpy.QtWidgets import QApplication, QStyle, QStyleOptionSlider, QWidget
 
 from ndv._types import KeyCode, KeyMod, KeyPressEvent
 from ndv.models._viewer_model import ArrayViewerModel
@@ -150,6 +150,39 @@ def test_dimension_slider_accumulates_partial_wheel_notches(
 
     _send_wheel_event(slider._slider, 60)
     assert slider.value() == 6
+
+
+def test_dimension_slider_handle_divides_available_width(
+    viewer: QtArrayView, qtbot: QtBot
+) -> None:
+    slider = viewer._qwidget.dims_sliders._sliders[0]._slider
+    slider.setFixedWidth(300)
+    viewer._qwidget.show()
+    qtbot.wait(0)
+
+    def handle_width() -> int:
+        option = QStyleOptionSlider()
+        slider.initStyleOption(option)
+        rect = slider.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider,
+            option,
+            QStyle.SubControl.SC_SliderHandle,
+            slider,
+        )
+        return rect.width()
+
+    # Ten positions divide the track into ten equal navigation targets.
+    assert handle_width() == 30
+
+    # Three channels each occupy one third of the same available width.
+    slider.setRange(0, 2)
+    qtbot.wait(0)
+    assert handle_width() == 100
+
+    # Resizing preserves the one-segment-per-position relationship.
+    slider.setFixedWidth(360)
+    qtbot.wait(0)
+    assert handle_width() == 120
 
 
 def test_dimension_slider_displays_one_based_position(viewer: QtArrayView) -> None:

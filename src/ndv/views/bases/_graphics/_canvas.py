@@ -70,6 +70,9 @@ class ArrayCanvas(GraphicsCanvas):
     def set_scales(self, scales: tuple[float, ...]) -> None:
         """Set per-visible-axis scale factors for rendering."""
 
+    def set_center_cross(self, visible: bool) -> None:
+        """Show or hide a cross through the center of the displayed 2D image."""
+
 
 class HistogramCanvas(GraphicsCanvas, LUTView):
     """A histogram-based view for LookUp Table (LUT) adjustment."""

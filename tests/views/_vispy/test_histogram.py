@@ -97,7 +97,8 @@ def test_interaction(model: LUTModel, histogram: VispyHistogramCanvas) -> None:
         return tuple(histogram.node_tform.imap((x, y))[:2])  # pyright: ignore[reportReturnType]
 
     # Test cursors
-    x, y = world_to_canvas((left + right) / 2, 0.5)
+    gamma_y = 2**-model.gamma
+    x, y = world_to_canvas((left + right) / 2, gamma_y)
     assert (
         histogram.get_cursor(MouseMoveEvent(x=x, y=y, btn=MouseButton.NONE))
         == CursorType.V_ARROW
@@ -114,7 +115,7 @@ def test_interaction(model: LUTModel, histogram: VispyHistogramCanvas) -> None:
     )
 
     # Select and move gamma
-    x, y = world_to_canvas((left + right) / 2, 0.5)
+    x, y = world_to_canvas((left + right) / 2, gamma_y)
     histogram.on_mouse_press(MousePressEvent(x=x, y=y, btn=MouseButton.LEFT))
     x, y = world_to_canvas((left + right) / 2, 0.75)
     histogram.on_mouse_move(MouseMoveEvent(x=x, y=y, btn=MouseButton.LEFT))

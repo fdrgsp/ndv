@@ -330,6 +330,8 @@ class VispyArrayCanvas(ArrayCanvas):
         self._selection: CanvasElement | None = None
         # Maintain weak reference to last ROI created
         self._last_roi_created: ReferenceType[VispyRectangle] | None = None
+        self._center_cross_visible = False
+        self._center_cross_lines: tuple[Any, Any] | None = None
 
     @property
     def _camera(self) -> vispy.scene.cameras.BaseCamera:
@@ -355,6 +357,14 @@ class VispyArrayCanvas(ArrayCanvas):
         if state := self._last_state.get(ndim):
             cam.set_state(state)
         self._view.camera = cam
+        # Vispy binds Backspace to restoring the camera's initial (pre-data)
+        # range, which can make the image appear to vanish. ndv owns camera
+        # creation, so disable that binding on every newly-created camera.
+        with suppress(Exception):
+            self._canvas.events.key_press.disconnect(cam.viewbox_key_event)
+        with suppress(Exception):
+            self._canvas.events.key_release.disconnect(cam.viewbox_key_event)
+        self._update_center_cross()
 
     def frontend_widget(self) -> Any:
         return self._canvas.native
@@ -366,7 +376,59 @@ class VispyArrayCanvas(ArrayCanvas):
         self._canvas.close()
 
     def refresh(self) -> None:
+        self._update_center_cross()
         self._canvas.update()
+
+    def set_center_cross(self, visible: bool) -> None:
+        """Show or hide a cross through the center of the displayed image."""
+        self._center_cross_visible = visible
+        self._update_center_cross()
+        self._canvas.update()
+
+    def _update_center_cross(self) -> None:
+        image = next(
+            (
+                handle._visual
+                for handle in self._elements.values()
+                if isinstance(handle, VispyImageHandle)
+                and isinstance(handle._visual, visuals.ImageVisual)
+                and handle._visual.parent is self._view.scene
+                and handle.visible()
+            ),
+            None,
+        )
+        if not self._center_cross_visible or self._ndim != 2 or image is None:
+            self._remove_center_cross()
+            return
+
+        if self._center_cross_lines is None:
+            horizontal = scene.visuals.Line(
+                color="yellow", width=2, method="gl", parent=self._view.scene
+            )
+            vertical = scene.visuals.Line(
+                color="yellow", width=2, method="gl", parent=self._view.scene
+            )
+            horizontal.order = vertical.order = 5
+            horizontal.set_gl_state(depth_test=False)
+            vertical.set_gl_state(depth_test=False)
+            self._center_cross_lines = (horizontal, vertical)
+
+        horizontal, vertical = self._center_cross_lines
+        horizontal.transform = vertical.transform = image.transform
+        width, height = image.size
+        horizontal.set_data(
+            pos=np.array([[0, height / 2], [width, height / 2]], dtype=np.float32)
+        )
+        vertical.set_data(
+            pos=np.array([[width / 2, 0], [width / 2, height]], dtype=np.float32)
+        )
+
+    def _remove_center_cross(self) -> None:
+        if self._center_cross_lines is None:
+            return
+        for line in self._center_cross_lines:
+            line.parent = None
+        self._center_cross_lines = None
 
     def add_image(self, data: np.ndarray | None = None) -> VispyImageHandle:
         """Add a new Image node to the scene."""
@@ -384,6 +446,7 @@ class VispyArrayCanvas(ArrayCanvas):
         handle = VispyImageHandle(img)
         handle._downsample_factors = downsample_factors
         self._elements[img] = handle
+        self._update_center_cross()
         if data is not None:
             self.set_range()
         return handle
@@ -450,6 +513,7 @@ class VispyArrayCanvas(ArrayCanvas):
             child.transform = vispy.visuals.transforms.STTransform(
                 scale=(_sx, _sy, _sz)
             )
+        self._update_center_cross()
         self.set_range()
 
     def set_range(

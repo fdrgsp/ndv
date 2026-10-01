@@ -441,6 +441,8 @@ class GfxArrayCanvas(ArrayCanvas):
         self._last_roi_created: ReferenceType[PyGFXRectangle] | None = None
         # Per-axis world-space scales (x, y, z) used for coordinate conversion
         self._world_scales: tuple[float, float, float] = (1.0, 1.0, 1.0)
+        self._center_cross_visible = False
+        self._center_cross_lines: tuple[pygfx.Line, pygfx.Line] | None = None
 
     def frontend_widget(self) -> Any:
         return self._canvas
@@ -483,6 +485,7 @@ class GfxArrayCanvas(ArrayCanvas):
         # restore the previous state if it exists
         if state := self._last_state.get(ndim):
             cam.set_state(state)
+        self._update_center_cross()
 
     def add_image(self, data: np.ndarray | None = None) -> PyGFXImageHandle:
         """Add a new Image node to the scene."""
@@ -504,6 +507,7 @@ class GfxArrayCanvas(ArrayCanvas):
         handle = PyGFXImageHandle(image, self.refresh)
         handle._downsample_factors = downsample_factors
         self._elements[image] = handle
+        self._update_center_cross()
         return handle
 
     def add_volume(self, data: np.ndarray | None = None) -> PyGFXImageHandle:
@@ -575,6 +579,7 @@ class GfxArrayCanvas(ArrayCanvas):
             child.local.scale = (_sx, _sy, _sz)
             has_visuals = True
         if has_visuals:
+            self._update_center_cross()
             self.set_range()
 
     def set_range(
@@ -621,9 +626,68 @@ class GfxArrayCanvas(ArrayCanvas):
         self._canvas.force_draw()
 
     def refresh(self) -> None:
+        self._update_center_cross()
         with suppress(AttributeError):
             self._canvas.update()
         self._canvas.request_draw(self._animate)
+
+    def set_center_cross(self, visible: bool) -> None:
+        """Show or hide a cross through the center of the displayed image."""
+        self._center_cross_visible = visible
+        self._update_center_cross()
+        self.refresh()
+
+    def _update_center_cross(self) -> None:
+        image_handle = next(
+            (
+                handle
+                for handle in self._elements.values()
+                if isinstance(handle, PyGFXImageHandle)
+                and isinstance(handle._image, pygfx.Image)
+                and handle._image.parent is self._scene
+                and handle.visible()
+            ),
+            None,
+        )
+        if not self._center_cross_visible or self._ndim != 2 or image_handle is None:
+            self._remove_center_cross()
+            return
+
+        image = image_handle._image
+        height, width = image_handle.data().shape[:2]
+        if self._center_cross_lines is None:
+            lines = []
+            for _ in range(2):
+                line = pygfx.Line(
+                    pygfx.Geometry(positions=np.zeros((2, 3), dtype=np.float32)),
+                    pygfx.LineMaterial(
+                        thickness=2, color="yellow", depth_test=False, aa=True
+                    ),
+                )
+                line.render_order = 5
+                self._scene.add(line)
+                lines.append(line)
+            self._center_cross_lines = (lines[0], lines[1])
+
+        horizontal, vertical = self._center_cross_lines
+        horizontal.local.scale = vertical.local.scale = image.local.scale
+        horizontal.local.position = vertical.local.position = image.local.position
+        horizontal.geometry.positions.data[:] = (
+            (0, height / 2, 0),
+            (width, height / 2, 0),
+        )
+        vertical.geometry.positions.data[:] = (
+            (width / 2, 0, 0),
+            (width / 2, height, 0),
+        )
+        horizontal.geometry.positions.update_full()
+        vertical.geometry.positions.update_full()
+
+    def _remove_center_cross(self) -> None:
+        if self._center_cross_lines is None:
+            return
+        self._scene.remove(*self._center_cross_lines)
+        self._center_cross_lines = None
 
     def _animate(self) -> None:
         if self._camera is not None:

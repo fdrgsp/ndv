@@ -219,6 +219,20 @@ class _QDimensionSlider(QSlider):
 class _QLabeledDimensionSlider(QLabeledSlider):
     _slider_class = cast("type[QSlider]", _QDimensionSlider)
 
+    def _on_slider_range_changed(self, minimum: int, maximum: int) -> None:
+        count = maximum - minimum + 1
+        self._label.setRange(1, count)
+        self._label.setValue(self.value() - minimum + 1)
+        self._label.setSuffix("")
+        self.rangeChanged.emit(minimum, maximum)
+
+    def _on_slider_value_changed(self, value: int) -> None:
+        self._label.setValue(value - self.minimum() + 1)
+        self.valueChanged.emit(value)
+
+    def _setValue(self, value: float) -> None:
+        self._slider.setValue(int(value) - 1 + self.minimum())
+
 
 class _QLUTWidget(QWidget):
     def __init__(
@@ -493,7 +507,7 @@ class DimRow(QObject):
         self.play_btn.fpsChanged.connect(self.set_fps)
         self.play_btn.toggled.connect(self.set_animated)
         self.label = QLabel(str(axis))
-        self.out_of = QLabel(f"/ {len(_coords) - 1}")
+        self.out_of = QLabel(f"/ {len(_coords)}")
         self.out_of.setStyleSheet("margin: 0 0 1px 0;")  # hack
 
         self._timer_id: int | None = None
@@ -586,7 +600,7 @@ class _QDimsSliders(QWidget):
                 start, stop = 0, len(_coords) - 1
             sld.setSingleStep(step)
             sld.setRange(start, stop)
-            self.setRowTotal(sld, stop)
+            self.setRowTotal(sld, stop - start + 1)
 
         self.currentIndexChanged.emit()
 
@@ -758,6 +772,12 @@ class _QArrayViewer(QWidget):
         self._selection: CanvasElement | None = None
         self.add_roi_btn = ROIButton()
 
+        # button to mark the center of the field of view
+        center_cross_icon = QIconifyIcon("mdi:crosshairs-gps")
+        self.center_cross_btn = QPushButton(center_cross_icon, "", self)
+        self.center_cross_btn.setCheckable(True)
+        self.center_cross_btn.setToolTip("Mark the center of the field of view")
+
         self.luts = _UpCollapsible(
             "LUTs",
             parent=self,
@@ -795,6 +815,7 @@ class _QArrayViewer(QWidget):
         self._btn_layout.addWidget(self.channel_mode_combo)
         self._btn_layout.addWidget(self.ndims_btn)
         self._btn_layout.addWidget(self.add_roi_btn)
+        self._btn_layout.addWidget(self.center_cross_btn)
         self._btn_layout.addWidget(self.set_range_btn)
 
         self._btns = QWidget()
@@ -863,9 +884,12 @@ class QtArrayView(ArrayView):
         self._luts: dict[ChannelKey, QLUTView] = {}
         self._shared_histogram: Any = None
         qwdg.add_roi_btn.toggled.connect(self._on_add_roi_clicked)
+        qwdg.center_cross_btn.toggled.connect(self._on_center_cross_toggled)
 
         self._viewer_model.events.connect(self._on_viewer_model_event)
         qwdg.add_roi_btn.setVisible(viewer_model.show_roi_button)
+        qwdg.center_cross_btn.setVisible(viewer_model.show_center_cross_button)
+        qwdg.center_cross_btn.setChecked(viewer_model.center_cross_visible)
 
         # TODO: use emit_fast
         qwdg.dims_sliders.currentIndexChanged.connect(self.currentIndexChanged.emit)
@@ -1015,6 +1039,9 @@ class QtArrayView(ArrayView):
             InteractionMode.CREATE_ROI if checked else InteractionMode.PAN_ZOOM
         )
 
+    def _on_center_cross_toggled(self, checked: bool) -> None:
+        self._viewer_model.center_cross_visible = checked
+
     def _on_viewer_model_event(self, info: EmissionInfo) -> None:
         sig_name = info.signal.name
         value = info.args[0]
@@ -1046,6 +1073,11 @@ class QtArrayView(ArrayView):
                 self._qwidget.shared_hist_log_btn.setVisible(False)
         elif sig_name == "show_roi_button":
             self._qwidget.add_roi_btn.setVisible(value)
+        elif sig_name == "show_center_cross_button":
+            self._qwidget.center_cross_btn.setVisible(value)
+        elif sig_name == "center_cross_visible":
+            with signals_blocked(self._qwidget.center_cross_btn):
+                self._qwidget.center_cross_btn.setChecked(value)
         elif sig_name == "show_channel_mode_selector":
             self._qwidget.channel_mode_combo.setVisible(value)
         elif sig_name == "show_reset_zoom_button":

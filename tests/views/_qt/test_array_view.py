@@ -12,7 +12,7 @@ from ndv._types import KeyCode, KeyMod, KeyPressEvent
 from ndv.models._viewer_model import ArrayViewerModel
 from ndv.views._app import get_histogram_canvas_class
 from ndv.views._qt._app import QtAppWrap
-from ndv.views._qt._array_view import PlayButton, QtArrayView
+from ndv.views._qt._array_view import DimRow, PlayButton, QtArrayView
 
 if TYPE_CHECKING:
     from pytestqt.qtbot import QtBot
@@ -57,6 +57,14 @@ def test_array_options(viewer: QtArrayView) -> None:
     assert not qwdg.add_roi_btn.isVisible()
     viewer._viewer_model.show_roi_button = True
     assert qwdg.add_roi_btn.isVisible()
+
+    assert not qwdg.center_cross_btn.isVisible()
+    viewer._viewer_model.show_center_cross_button = True
+    assert qwdg.center_cross_btn.isVisible()
+    qwdg.center_cross_btn.setChecked(True)
+    assert viewer._viewer_model.center_cross_visible
+    viewer._viewer_model.center_cross_visible = False
+    assert not qwdg.center_cross_btn.isChecked()
 
     assert isinstance(play_btn, PlayButton)
     assert play_btn.isVisible()
@@ -142,6 +150,35 @@ def test_dimension_slider_accumulates_partial_wheel_notches(
 
     _send_wheel_event(slider._slider, 60)
     assert slider.value() == 6
+
+
+def test_dimension_slider_displays_one_based_position(viewer: QtArrayView) -> None:
+    dims = viewer._qwidget.dims_sliders
+    row = next(row for row in dims.findChildren(DimRow) if row.label.text() == "0")
+
+    assert row.slider.value() == 0
+    assert row.index_label.text() == "1"
+    assert row.out_of.text() == "/ 10"
+
+    row.slider.setValue(9)
+    assert row.index_label.text() == "10"
+
+    row.index_label.valueEdited.emit(3.0)
+    assert row.slider.value() == 2
+
+
+def test_dimension_slider_one_based_nonzero_range(qtbot: QtBot) -> None:
+    view = QtArrayView(QWidget(), ArrayViewerModel())
+    qtbot.addWidget(view.frontend_widget())
+    view.create_sliders({"z": range(5, 15)})
+    row = view._qwidget.dims_sliders.findChildren(DimRow)[0]
+
+    assert row.slider.value() == 5
+    assert row.index_label.text() == "1"
+    assert row.out_of.text() == "/ 10"
+
+    row.index_label.valueEdited.emit(3.0)
+    assert row.slider.value() == 7
 
 
 def test_key_event_filter(qtbot: QtBot) -> None:

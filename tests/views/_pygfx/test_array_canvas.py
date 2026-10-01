@@ -110,3 +110,33 @@ def test_no_gpu_memory_leak_on_remove() -> None:
     assert sum(tracker.amounts.values()) <= baseline
 
     canvas.close()
+
+
+@pytest.mark.usefixtures("any_app")
+def test_center_cross_spans_image_and_can_be_hidden() -> None:
+    canvas = GfxArrayCanvas(ArrayViewerModel())
+    _force_canvas_size(canvas)
+    canvas.set_ndim(2)
+    image = canvas.add_image(np.zeros((100, 200), dtype=np.uint8))
+
+    canvas.set_center_cross(True)
+
+    assert canvas._center_cross_lines is not None
+    horizontal, vertical = canvas._center_cross_lines
+    assert horizontal in canvas._scene.children
+    assert vertical in canvas._scene.children
+    assert horizontal.render_order > image._image.render_order
+    assert horizontal.geometry.positions.data.tolist() == [
+        [0, 50, 0],
+        [200, 50, 0],
+    ]
+    assert vertical.geometry.positions.data.tolist() == [
+        [100, 0, 0],
+        [100, 100, 0],
+    ]
+
+    canvas.set_center_cross(False)
+    assert canvas._center_cross_lines is None
+    assert horizontal not in canvas._scene.children
+    assert vertical not in canvas._scene.children
+    canvas.close()

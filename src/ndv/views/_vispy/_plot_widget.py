@@ -476,7 +476,7 @@ class PanZoom1DCamera(scene.cameras.PanZoomCamera):
         if self.axis_index is None:
             super().pan(*pan)
             return
-        _pan = list(np.ravel(pan))
+        _pan = [float(value) for value in np.ravel(pan)]
         if self.axis_index < len(_pan):
             _pan[self.axis_index] = 0
         super().pan(*_pan)

@@ -123,6 +123,10 @@ class ArrayViewer:
         frontend_cls = _app.get_array_view_class()
         canvas_cls = _app.get_array_canvas_class()
         self._canvas = canvas_cls(self._viewer_model)
+        self._viewer_model.events.center_cross_visible.connect(
+            self._on_center_cross_visible_changed
+        )
+        self._canvas.set_center_cross(self._viewer_model.center_cross_visible)
 
         # TODO: Is this necessary?
         self._histograms: dict[ChannelKey, HistogramCanvas] = {}
@@ -229,6 +233,75 @@ class ArrayViewer:
             self._roi_model = RectangularROIModel.model_validate(roi_model)
             self._set_roi_model_connected(self._roi_model)
         self._synchronize_roi()
+
+    def set_center_cross_active(self, active: bool) -> None:
+        """Show or hide a cross through the center of the field of view."""
+        self._viewer_model.center_cross_visible = active
+
+    def center_cross_active(self) -> bool:
+        """Return whether the field-of-view center cross is shown."""
+        return self._viewer_model.center_cross_visible
+
+    def reset_zoom(self) -> None:
+        """Fit the canvas camera to the currently displayed image."""
+        self._on_view_reset_zoom_clicked()
+
+    def clear_roi(self) -> None:
+        """Remove both the ROI model and its canvas visual."""
+        self.roi = None
+        if self._roi_view is not None:
+            self._roi_view.remove()
+            self._roi_view = None
+
+    def set_existing_roi_editing_active(self, active: bool) -> None:
+        """Select or deselect the existing ROI without entering creation mode."""
+        if self._viewer_model.interaction_mode is not InteractionMode.PAN_ZOOM:
+            self._viewer_model.interaction_mode = InteractionMode.PAN_ZOOM
+        if active and self.roi is not None:
+            if self._roi_view is None:
+                self._create_roi_view()
+            self._synchronize_roi()
+        self.set_roi_visual_selected(active)
+
+    def set_roi_selection_active(self, active: bool) -> None:
+        """Enter or leave rectangular ROI creation mode."""
+        mode = InteractionMode.CREATE_ROI if active else InteractionMode.PAN_ZOOM
+        if self._viewer_model.interaction_mode != mode:
+            self._viewer_model.interaction_mode = mode
+
+    def roi_selection_active(self) -> bool:
+        """Return whether rectangular ROI creation mode is active."""
+        return self._viewer_model.interaction_mode is InteractionMode.CREATE_ROI
+
+    def existing_roi_editing_active(self) -> bool:
+        """Return whether an existing ROI is selected for handle editing."""
+        return (
+            self._viewer_model.interaction_mode is InteractionMode.PAN_ZOOM
+            and self.roi is not None
+            and self.roi_visual_selected()
+        )
+
+    def set_roi_visual_selected(self, selected: bool) -> None:
+        """Set the current ROI visual's selected/handle state."""
+        if self._roi_view is not None:
+            self._roi_view.set_selected(selected)
+
+    def roi_visual_selected(self) -> bool:
+        """Return whether the current ROI visual is visibly selected."""
+        return self._roi_view is not None and self._roi_view.selected()
+
+    def roi_visual_visible(self) -> bool:
+        """Return whether the current ROI visual is visible."""
+        return self._roi_view is not None and self._roi_view.visible()
+
+    def connect_roi_selection_changed(self, callback: Any) -> None:
+        """Connect a callback to interaction-mode changes."""
+        self._viewer_model.events.interaction_mode.connect(callback)
+
+    def disconnect_roi_selection_changed(self, callback: Any) -> None:
+        """Disconnect a callback registered by ``connect_roi_selection_changed``."""
+        with suppress(Exception):
+            self._viewer_model.events.interaction_mode.disconnect(callback)
 
     def show(self) -> None:
         """Show the viewer."""
@@ -623,6 +696,9 @@ class ArrayViewer:
 
             # Create a new ROI
             self._create_roi_view()
+
+    def _on_center_cross_visible_changed(self, visible: bool) -> None:
+        self._canvas.set_center_cross(visible)
 
     def _create_roi_view(self) -> None:
         # Remove old ROI view

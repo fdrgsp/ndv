@@ -24,6 +24,8 @@ if TYPE_CHECKING:
         use_shared_histogram: bool
         show_reset_zoom_button: bool
         show_roi_button: bool
+        show_center_cross_button: bool
+        center_cross_visible: bool
         show_channel_mode_selector: bool
         show_play_button: bool
         show_data_info: bool
@@ -68,6 +70,11 @@ class ArrayViewerModel(NDVModel):
         Whether to show the reset zoom button, by default True.
     show_roi_button : bool, optional
         Whether to show the ROI button, by default False.
+    show_center_cross_button : bool, optional
+        Whether to show the field-of-view center-cross button, by default False.
+    center_cross_visible : bool, optional
+        Whether to show a cross through the center of the field of view, by default
+        False.
     show_channel_mode_selector : bool, optional
         Whether to show the channel mode selector, by default True.
     show_play_button : bool, optional
@@ -91,6 +98,8 @@ class ArrayViewerModel(NDVModel):
     use_shared_histogram: bool = True
     show_reset_zoom_button: bool = True
     show_roi_button: bool = False
+    show_center_cross_button: bool = False
+    center_cross_visible: bool = False
     show_channel_mode_selector: bool = True
     show_play_button: bool = True
     show_data_info: bool = True
@@ -112,6 +121,8 @@ class ArrayViewerModel(NDVModel):
             use_shared_histogram = Signal(bool, bool)
             show_reset_zoom_button = Signal(bool, bool)
             show_roi_button = Signal(bool, bool)
+            show_center_cross_button = Signal(bool, bool)
+            center_cross_visible = Signal(bool, bool)
             show_channel_mode_selector = Signal(bool, bool)
             show_play_button = Signal(bool, bool)
             show_data_info = Signal(bool, bool)

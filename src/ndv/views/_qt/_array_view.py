@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import psygnal
 from qtpy.QtCore import QObject, QPoint, QSize, Qt, Signal  # type: ignore[attr-defined]
-from qtpy.QtGui import QCursor, QFontDatabase, QMouseEvent, QMovie
+from qtpy.QtGui import QCursor, QFontDatabase, QMouseEvent, QMovie, QWheelEvent
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -23,6 +23,7 @@ from qtpy.QtWidgets import (
     QLayout,
     QPushButton,
     QSizePolicy,
+    QSlider,
     QSpacerItem,
     QSplitter,
     QVBoxLayout,
@@ -174,6 +175,49 @@ class _DimToggleButton(QPushButton):
         icn.addKey("f7:view-3d")
         super().__init__(icn, "", parent)
         self.setCheckable(True)
+
+
+class _QDimensionSlider(QSlider):
+    """Dimension slider with deterministic mouse-wheel navigation."""
+
+    _WHEEL_STEP_DELTA = 120
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._wheel_remainder = 0
+        # Apply this directly to the leaf widget so an application's proxy style
+        # cannot replace the rectangular handle with its generic slider handle.
+        self.setStyleSheet(SLIDER_STYLE)
+
+    def wheelEvent(self, event: QWheelEvent | None) -> None:
+        if event is None:  # pragma: no cover - Qt never sends a null event
+            return
+
+        # Pixel deltas identify smooth scrolling devices such as trackpads.  Keep
+        # Qt's native handling for those; this override is only for wheel detents.
+        if not event.pixelDelta().isNull():
+            super().wheelEvent(event)
+            return
+
+        delta = event.angleDelta().y() or event.angleDelta().x()
+        if not delta:
+            super().wheelEvent(event)
+            return
+
+        total = self._wheel_remainder + delta
+        steps = abs(total) // self._WHEEL_STEP_DELTA
+        if total < 0:
+            steps = -steps
+        self._wheel_remainder = total - steps * self._WHEEL_STEP_DELTA
+
+        if steps:
+            direction = -1 if self.invertedControls() else 1
+            self.setValue(self.value() + direction * steps * self.singleStep())
+        event.accept()
+
+
+class _QLabeledDimensionSlider(QLabeledSlider):
+    _slider_class = cast("type[QSlider]", _QDimensionSlider)
 
 
 class _QLUTWidget(QWidget):
@@ -443,7 +487,7 @@ class DimRow(QObject):
         self, axis: AxisKey, _coords: Sequence, parent: QObject | None
     ) -> None:
         super().__init__(parent)
-        self.slider = QLabeledSlider(Qt.Orientation.Horizontal)
+        self.slider = _QLabeledDimensionSlider(Qt.Orientation.Horizontal)
         self.index_label = self.slider._label
         self.play_btn = PlayButton()
         self.play_btn.fpsChanged.connect(self.set_fps)

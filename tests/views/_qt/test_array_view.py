@@ -4,8 +4,8 @@ from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 from pytest import fixture
-from qtpy.QtCore import QEvent, Qt
-from qtpy.QtGui import QKeyEvent
+from qtpy.QtCore import QEvent, QPoint, QPointF, Qt
+from qtpy.QtGui import QKeyEvent, QWheelEvent
 from qtpy.QtWidgets import QApplication, QWidget
 
 from ndv._types import KeyCode, KeyMod, KeyPressEvent
@@ -104,6 +104,44 @@ def test_play_btn(viewer: QtArrayView, qtbot: QtBot) -> None:
     with qtbot.waitSignal(dims_wdg.currentIndexChanged, timeout=1000):
         play_btn.click()
     play_btn.click()  # stop it
+
+
+def _send_wheel_event(widget: QWidget, angle_delta: int) -> None:
+    event = QWheelEvent(
+        QPointF(1, 1),
+        QPointF(1, 1),
+        QPoint(),
+        QPoint(0, angle_delta),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    QApplication.sendEvent(widget, event)
+
+
+def test_dimension_slider_wheel_uses_one_step_per_notch(viewer: QtArrayView) -> None:
+    slider = viewer._qwidget.dims_sliders._sliders[0]
+    slider.setValue(5)
+
+    _send_wheel_event(slider._slider, 120)
+    assert slider.value() == 6
+
+    _send_wheel_event(slider._slider, -120)
+    assert slider.value() == 5
+
+
+def test_dimension_slider_accumulates_partial_wheel_notches(
+    viewer: QtArrayView,
+) -> None:
+    slider = viewer._qwidget.dims_sliders._sliders[0]
+    slider.setValue(5)
+
+    _send_wheel_event(slider._slider, 60)
+    assert slider.value() == 5
+
+    _send_wheel_event(slider._slider, 60)
+    assert slider.value() == 6
 
 
 def test_key_event_filter(qtbot: QtBot) -> None:

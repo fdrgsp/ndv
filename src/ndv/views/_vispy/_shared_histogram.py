@@ -88,7 +88,8 @@ class VispySharedHistogramCanvas(SharedHistogramCanvas):
         self.plot._grid_wdgs[Component.PAD_LEFT].width_max = 0
         # Start with a narrow y-axis (will grow as needed via update_yaxis_width)
         self.plot._yaxis_width = 14
-        self.plot._grid_wdgs[Component.YAXIS].width_max = 14
+        yaxis_wdg = self.plot._grid_wdgs[Component.YAXIS]
+        yaxis_wdg.width_min = yaxis_wdg.width_max = 14
         self._canvas.central_widget.add_widget(self.plot)
         self.node_tform = cast("scene.Node", self.plot).node_transform(
             self.plot._view.scene

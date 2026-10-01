@@ -281,11 +281,17 @@ def test_channel_names_are_stored_without_a_legend() -> None:
 
 @pytest.mark.usefixtures("any_app")
 def test_log_tick_labels_have_enough_width() -> None:
-    """Size the y-axis from displayed counts, not log-transformed values."""
+    """Grow the rendered axis after its initial narrow layout."""
     hist = VispySharedHistogramCanvas()
+    hist._canvas.size = (900, 160)
+    hist._canvas.render()
+    assert hist.plot.yaxis.rect.width == 14
+
     hist.set_channel_data(0, np.array([10_000]), np.array([0, 1], dtype=float))
     hist.set_log_base(10)
+    hist._canvas.render()
 
     # Four displayed digits need a 54 px gutter once the tick and text margin
     # are included; 34 px clips the leading digits on high-DPI displays.
     assert hist.plot._yaxis_width >= 54
+    assert hist.plot.yaxis.rect.width >= 54

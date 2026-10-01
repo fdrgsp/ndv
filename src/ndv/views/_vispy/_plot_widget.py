@@ -300,7 +300,8 @@ class PlotWidget(scene.Widget):
         # than 0 for some reason.  They should also be extracted into some sort
         # of `hide/show` logic for each component
         self._yaxis_width = _AXIS_WIDTH_STEPS[0]
-        self._grid_wdgs[Component.YAXIS].width_max = self._yaxis_width
+        yaxis_wdg = self._grid_wdgs[Component.YAXIS]
+        yaxis_wdg.width_min = yaxis_wdg.width_max = self._yaxis_width
         self._grid_wdgs[Component.PAD_LEFT].width_max = 2
         self._grid_wdgs[Component.XAXIS].height_max = 14
         self.ylabel = ylabel
@@ -375,7 +376,14 @@ class PlotWidget(scene.Widget):
             needed = _AXIS_WIDTH_STEPS[-1]
         if needed != self._yaxis_width:
             self._yaxis_width = needed
-            self._grid_wdgs[Component.YAXIS].width_max = needed
+            yaxis_wdg = self._grid_wdgs[Component.YAXIS]
+            # Updating only width_max does not invalidate an already-laid-out
+            # Vispy grid: the axis can remain stuck at its initial narrow width.
+            # Pinning both bounds forces the rendered widget to adopt the new
+            # gutter once the grid constraint solver is rebuilt.
+            yaxis_wdg.width_min = yaxis_wdg.width_max = needed
+            self.grid._need_solver_recreate = True
+            self.grid._update_child_widget_dim()
 
     def lock_axis(self, axis: Literal["x", "y", None]) -> None:
         """Prevent panning and zooming along a particular axis."""

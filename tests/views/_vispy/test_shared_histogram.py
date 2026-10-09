@@ -12,6 +12,7 @@ from ndv._types import (
     MousePressEvent,
     MouseReleaseEvent,
 )
+from ndv.views._vispy._plot_widget import Component
 from ndv.views._vispy._shared_histogram import VispySharedHistogramCanvas
 
 
@@ -295,3 +296,23 @@ def test_log_tick_labels_have_enough_width() -> None:
     # are included; 34 px clips the leading digits on high-DPI displays.
     assert hist.plot._yaxis_width >= 54
     assert hist.plot.yaxis.rect.width >= 54
+
+
+@pytest.mark.usefixtures("any_app")
+def test_last_x_tick_label_has_right_padding() -> None:
+    """Keep the right half of a centered max-value x label inside the canvas."""
+    hist = VispySharedHistogramCanvas()
+    hist._canvas.size = (900, 160)
+    hist._canvas.render()
+
+    hist.set_channel_data(
+        0, np.array([1, 2]), np.array([0, 32_768, 65_535], dtype=float)
+    )
+    hist.set_range()
+    hist._canvas.render()
+
+    # "65535" is five glyphs wide; half of it overflows the right edge of the
+    # view, which used to land past the 2 px pad and get clipped.
+    pad = hist.plot._grid_wdgs[Component.PAD_RIGHT]
+    assert hist.plot._xaxis_pad >= 24
+    assert pad.rect.width >= 24

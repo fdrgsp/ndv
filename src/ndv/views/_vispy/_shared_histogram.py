@@ -119,6 +119,7 @@ class VispySharedHistogramCanvas(SharedHistogramCanvas):
         if x and y:
             self.plot.camera.set_range(x=x, y=y, margin=1e-30)
             self.plot.update_yaxis_width(y)
+            self.plot.update_xaxis_padding(x)
 
     def canvas_to_world(
         self, pos_xy: tuple[float, float]
@@ -456,6 +457,7 @@ class VispySharedHistogramCanvas(SharedHistogramCanvas):
         if x and y:
             self.plot.camera.set_range(x=x, y=y, margin=1e-30)
             self.plot.update_yaxis_width(y)
+            self.plot.update_xaxis_padding(x)
         self._refresh_all_lut_visuals()
 
     def _auto_range_y_only(self) -> None:
@@ -467,6 +469,7 @@ class VispySharedHistogramCanvas(SharedHistogramCanvas):
                 x=(camera_rect.left, camera_rect.right), y=y, margin=1e-30
             )
             self.plot.update_yaxis_width(y)
+            self.plot.update_xaxis_padding((camera_rect.left, camera_rect.right))
         self._refresh_all_lut_visuals()
 
     def _visible_x_range(self) -> tuple[float, float] | None:
@@ -488,6 +491,7 @@ class VispySharedHistogramCanvas(SharedHistogramCanvas):
                 x=(camera_rect.left, camera_rect.right), y=y, margin=1e-30
             )
             self.plot.update_yaxis_width(y)
+            self.plot.update_xaxis_padding((camera_rect.left, camera_rect.right))
         self._refresh_all_lut_visuals()
 
     def _refresh_all_lut_visuals(self) -> None:

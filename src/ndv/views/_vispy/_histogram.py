@@ -489,6 +489,8 @@ class VispyHistogramCanvas(HistogramCanvas):
         # Grow y-axis width if the count labels need more space
         if not self._vertical and y is not None:
             self.plot.update_yaxis_width(y)
+        if not self._vertical and x is not None:
+            self.plot.update_xaxis_padding(x)
 
     def setVisible(self, visible: bool) -> None: ...
 

@@ -302,6 +302,7 @@ class PlotWidget(scene.Widget):
         self._yaxis_width = _AXIS_WIDTH_STEPS[0]
         yaxis_wdg = self._grid_wdgs[Component.YAXIS]
         yaxis_wdg.width_min = yaxis_wdg.width_max = self._yaxis_width
+        self._xaxis_pad = 2
         self._grid_wdgs[Component.PAD_LEFT].width_max = 2
         self._grid_wdgs[Component.XAXIS].height_max = 14
         self.ylabel = ylabel
@@ -382,6 +383,30 @@ class PlotWidget(scene.Widget):
             # Pinning both bounds forces the rendered widget to adopt the new
             # gutter once the grid constraint solver is rebuilt.
             yaxis_wdg.width_min = yaxis_wdg.width_max = needed
+            self.grid._need_solver_recreate = True
+            self.grid._update_child_widget_dim()
+
+    def update_xaxis_padding(self, domain: tuple[float, float]) -> None:
+        """Reserve right-hand room for the last x tick label.
+
+        Tick labels are centered on their tick, so a tick close to the right
+        edge of the view (e.g. 65000 on a uint16 histogram) overflows the plot
+        by half its width.  With the default 2 px right pad that half is
+        drawn past the canvas edge and clipped, which is especially visible
+        on Windows where the glyphs render wider.
+        """
+        label = str(round(max(domain)))
+        # Same ~8 px per glyph estimate as the y-axis, halved since only the
+        # right half of the label overflows; at least 3 glyphs so short or
+        # fractional labels (e.g. "0.8") still fit.
+        needed = max(len(label), 3) * 4 + 4
+        # Snap up to a multiple of 6 px so small domain changes (e.g. panning)
+        # don't keep rebuilding the grid layout.
+        needed = -(-needed // 6) * 6
+        if needed != self._xaxis_pad:
+            self._xaxis_pad = needed
+            pad_wdg = self._grid_wdgs[Component.PAD_RIGHT]
+            pad_wdg.width_min = pad_wdg.width_max = needed
             self.grid._need_solver_recreate = True
             self.grid._update_child_widget_dim()
 

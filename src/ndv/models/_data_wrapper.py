@@ -19,9 +19,6 @@ from psygnal import Signal
 from ._ring_buffer import RingBuffer
 
 if TYPE_CHECKING:
-    from collections.abc import Hashable
-    from typing import TypeGuard
-if TYPE_CHECKING:
     from collections.abc import Container, Iterator
     from typing import Any, TypeAlias, TypeGuard
 

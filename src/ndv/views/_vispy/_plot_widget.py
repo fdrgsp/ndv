@@ -357,13 +357,13 @@ class PlotWidget(scene.Widget):
         if domain is None:
             domain = cast("tuple[float, float]", self.yaxis.axis.domain)
         # Estimate the widest tick label (ticks are integers on a histogram)
-        max_val = round(max(abs(domain[0]), abs(domain[1])))
+        max_val = max(abs(domain[0]), abs(domain[1]))
         ticker = self.yaxis.axis.ticker
         if isinstance(ticker, LogTicker):
             # The domain is log-transformed, while the labels show original
             # counts (for example, domain 3 -> label 1000 in base 10).
             max_val = round(ticker._log_base**max_val - 1)
-        label = str(max_val)
+        label = str(round(max_val))
         # Allow ~8 px per glyph plus room for the tick and tick-label margin.
         # The earlier 5 px estimate left four-digit labels partially outside a
         # 34 px widget on high-DPI displays, clipping their leading digits.
@@ -373,28 +373,16 @@ class PlotWidget(scene.Widget):
             if step >= needed:
                 needed = step
                 break
-        else:
-            needed = _AXIS_WIDTH_STEPS[-1]
         if needed != self._yaxis_width:
             self._yaxis_width = needed
             yaxis_wdg = self._grid_wdgs[Component.YAXIS]
-            # Updating only width_max does not invalidate an already-laid-out
-            # Vispy grid: the axis can remain stuck at its initial narrow width.
-            # Pinning both bounds forces the rendered widget to adopt the new
-            # gutter once the grid constraint solver is rebuilt.
+            # Pin both bounds and rebuild the solver to update an existing layout.
             yaxis_wdg.width_min = yaxis_wdg.width_max = needed
             self.grid._need_solver_recreate = True
             self.grid._update_child_widget_dim()
 
     def update_xaxis_padding(self, domain: tuple[float, float]) -> None:
-        """Reserve right-hand room for the last x tick label.
-
-        Tick labels are centered on their tick, so a tick close to the right
-        edge of the view (e.g. 65000 on a uint16 histogram) overflows the plot
-        by half its width.  With the default 2 px right pad that half is
-        drawn past the canvas edge and clipped, which is especially visible
-        on Windows where the glyphs render wider.
-        """
+        """Reserve half a tick label's width beyond the right edge of the plot."""
         label = str(round(max(domain)))
         # Same ~8 px per glyph estimate as the y-axis, halved since only the
         # right half of the label overflows; at least 3 glyphs so short or

@@ -386,6 +386,9 @@ class VispyArrayCanvas(ArrayCanvas):
         self._canvas.update()
 
     def _update_center_cross(self) -> None:
+        if not self._center_cross_visible or self._ndim != 2:
+            self._remove_center_cross()
+            return
         image = next(
             (
                 handle._visual
@@ -397,7 +400,7 @@ class VispyArrayCanvas(ArrayCanvas):
             ),
             None,
         )
-        if not self._center_cross_visible or self._ndim != 2 or image is None:
+        if image is None:
             self._remove_center_cross()
             return
 

@@ -634,10 +634,12 @@ class GfxArrayCanvas(ArrayCanvas):
     def set_center_cross(self, visible: bool) -> None:
         """Show or hide a cross through the center of the displayed image."""
         self._center_cross_visible = visible
-        self._update_center_cross()
         self.refresh()
 
     def _update_center_cross(self) -> None:
+        if not self._center_cross_visible or self._ndim != 2:
+            self._remove_center_cross()
+            return
         image_handle = next(
             (
                 handle
@@ -649,7 +651,7 @@ class GfxArrayCanvas(ArrayCanvas):
             ),
             None,
         )
-        if not self._center_cross_visible or self._ndim != 2 or image_handle is None:
+        if image_handle is None:
             self._remove_center_cross()
             return
 

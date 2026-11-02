@@ -47,10 +47,15 @@ class MainThreadInvoker(QObject):
     @Slot()  # type: ignore[untyped-decorator]
     def _invoke_current(self) -> None:
         """Invokes the current callable."""
-        """Invokes the current callable."""
-        if (cb := self._current_callable) is not None:
-            cb()
-            _INVOKERS.discard(self)
+        try:
+            if (cb := self._current_callable) is not None:
+                cb()
+        finally:
+            self._current_callable = None
+            # Keep the Python wrapper alive until Qt deletes the QObject on
+            # its owning thread. The submitting worker may still hold a
+            # reference while this slot is running.
+            self.deleteLater()
 
 
 if (QAPP := QCoreApplication.instance()) is None:
@@ -68,6 +73,9 @@ def call_in_main_thread(
         invoker = MainThreadInvoker()
         invoker.moveToThread(_APP_THREAD)
         _INVOKERS.add(invoker)
+        invoker.destroyed.connect(
+            lambda: _INVOKERS.discard(invoker), Qt.ConnectionType.DirectConnection
+        )
         return invoker.invoke(func, *args, **kwargs)
 
     future: Future[T] = Future()

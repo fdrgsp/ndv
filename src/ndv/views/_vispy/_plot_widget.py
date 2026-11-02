@@ -426,6 +426,14 @@ class PanZoom1DCamera(scene.cameras.PanZoomCamera):
         self.ybounds: tuple[float | None, float | None] = (None, None)
         super().__init__(*args, **kwargs)
 
+    def _update_transform(self) -> None:
+        # Hidden/collapsed viewboxes (including Jupyter before its first browser
+        # resize) have no drawable area. Their transform would be singular;
+        # recompute it when a later resize supplies a positive size.
+        if self._viewbox is not None and min(self._viewbox.size) <= 0:
+            return
+        super()._update_transform()
+
     @property
     def axis_index(self) -> Literal[0, 1, None]:
         """Return the index of the axis along which to pan and zoom."""

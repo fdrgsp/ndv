@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pytest
 from pytest import fixture
@@ -15,12 +17,29 @@ from ndv._types import (
 from ndv.views._vispy._plot_widget import Component
 from ndv.views._vispy._shared_histogram import VispySharedHistogramCanvas
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 
 @fixture
 def hist() -> VispySharedHistogramCanvas:
     canvas = VispySharedHistogramCanvas()
     canvas.set_range(x=(0, 100), y=(0, 1))
     return canvas
+
+
+@fixture
+def layout_hist(any_app: object) -> Iterator[VispySharedHistogramCanvas]:
+    # Exercise the actual layout solver without requiring an OpenGL draw.
+    # Jupyter gets its size from a browser resize event, and wx cannot make
+    # an OpenGL context current until its widget is shown.
+    canvas = VispySharedHistogramCanvas()
+    canvas.plot.size = (900, 160)
+    canvas.plot.grid._update_child_widget_dim()
+    try:
+        yield canvas
+    finally:
+        canvas.close()
 
 
 def _world_to_canvas(
@@ -282,37 +301,50 @@ def test_channel_names_are_stored_without_a_legend() -> None:
 
 @pytest.mark.usefixtures("any_app")
 @pytest.mark.parametrize("count", [1_000, 10_000, 1_000_000_000])
-def test_log_tick_labels_have_enough_width(count: int) -> None:
-    """Grow the rendered axis after its initial narrow layout."""
-    hist = VispySharedHistogramCanvas()
-    hist._canvas.size = (900, 160)
-    hist._canvas.render()
-    assert hist.plot.yaxis.rect.width == 14
+def test_log_tick_labels_have_enough_width(
+    layout_hist: VispySharedHistogramCanvas, count: int
+) -> None:
+    """Grow the axis after its initial narrow layout."""
+    hist = layout_hist
+    assert hist.plot.yaxis.rect.width == pytest.approx(14)
 
     hist.set_channel_data(0, np.array([count]), np.array([0, 1], dtype=float))
     hist.set_log_base(10)
-    hist._canvas.render()
 
     needed = len(str(count)) * 8 + 18
     assert hist.plot._yaxis_width >= needed
-    assert hist.plot.yaxis.rect.width >= needed
+    assert hist.plot.yaxis.rect.width == pytest.approx(hist.plot._yaxis_width)
 
 
 @pytest.mark.usefixtures("any_app")
-def test_last_x_tick_label_has_right_padding() -> None:
+def test_last_x_tick_label_has_right_padding(
+    layout_hist: VispySharedHistogramCanvas,
+) -> None:
     """Keep the right half of a centered max-value x label inside the canvas."""
-    hist = VispySharedHistogramCanvas()
-    hist._canvas.size = (900, 160)
-    hist._canvas.render()
+    hist = layout_hist
 
     hist.set_channel_data(
         0, np.array([1, 2]), np.array([0, 32_768, 65_535], dtype=float)
     )
     hist.set_range()
-    hist._canvas.render()
 
     # "65535" is five glyphs wide; half of it overflows the right edge of the
     # view, which used to land past the 2 px pad and get clipped.
     pad = hist.plot._grid_wdgs[Component.PAD_RIGHT]
     assert hist.plot._xaxis_pad >= 24
-    assert pad.rect.width >= 24
+    assert pad.rect.width == pytest.approx(hist.plot._xaxis_pad)
+
+
+@pytest.mark.usefixtures("any_app")
+def test_camera_range_survives_zero_size_viewbox() -> None:
+    hist = VispySharedHistogramCanvas()
+    try:
+        view = hist.plot._view
+        view.size = (0, 0)
+        hist.plot.camera.set_range(x=(0, 100), y=(0, 10))
+        view.size = (800, 120)
+        matrix = hist.plot.camera.tf_mat.matrix
+        assert np.isfinite(matrix).all()
+        assert np.linalg.det(matrix) != 0
+    finally:
+        hist.close()

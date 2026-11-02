@@ -336,11 +336,14 @@ def test_last_x_tick_label_has_right_padding(
 
 
 @pytest.mark.usefixtures("any_app")
-def test_camera_range_survives_zero_size_viewbox() -> None:
+@pytest.mark.parametrize(
+    "size", [(0, 0), (1e-14, 1e-14), (2e-47, 1e-47), (800, 1e-14), (1e-14, 120)]
+)
+def test_camera_range_survives_degenerate_viewbox(size: tuple[float, float]) -> None:
     hist = VispySharedHistogramCanvas()
     try:
         view = hist.plot._view
-        view.size = (0, 0)
+        view.size = size
         hist.plot.camera.set_range(x=(0, 100), y=(0, 10))
         view.size = (800, 120)
         matrix = hist.plot.camera.tf_mat.matrix

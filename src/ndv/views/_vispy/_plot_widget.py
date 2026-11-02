@@ -427,10 +427,10 @@ class PanZoom1DCamera(scene.cameras.PanZoomCamera):
         super().__init__(*args, **kwargs)
 
     def _update_transform(self) -> None:
-        # Hidden/collapsed viewboxes (including Jupyter before its first browser
-        # resize) have no drawable area. Their transform would be singular;
-        # recompute it when a later resize supplies a positive size.
-        if self._viewbox is not None and min(self._viewbox.size) <= 0:
+        # Before Jupyter's first browser resize, the layout can collapse a
+        # viewbox to zero or a tiny positive rounding residual. Wait until it
+        # spans a logical pixel before constructing an invertible transform.
+        if self._viewbox is not None and min(self._viewbox.size) < 1:
             return
         super()._update_transform()
 

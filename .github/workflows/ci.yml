@@ -174,7 +174,7 @@ jobs:
           include-hidden-files: true
 
   upload_coverage:
-    if: always()
+    if: always() && github.repository == 'pyapp-kit/ndv'
     needs: [test, test-array-libs]
     uses: pyapp-kit/workflows/.github/workflows/upload-coverage.yml@v2
     secrets:

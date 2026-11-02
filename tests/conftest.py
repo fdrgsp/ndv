@@ -48,6 +48,12 @@ def wxapp() -> Iterator[wx.App]:
     if (_wxapp := wx.App.Get()) is None:
         _wxapp = wx.App()
     yield _wxapp
+    # Destroy native windows while wx is still alive. Leaving them for Python
+    # shutdown can destroy Windows handles twice and turn a passing run into
+    # a nonzero exit after pytest has printed its summary.
+    for window in wx.GetTopLevelWindows():
+        window.Destroy()
+    _wxapp.Destroy()
 
 
 @pytest.fixture

@@ -99,6 +99,7 @@ def _catch_qt_leaks(request: FixtureRequest, qapp: QApplication) -> Iterator[Non
         yield
         return
 
+    gc.collect()
     nbefore = len(qapp.topLevelWidgets())
     failures_before = request.session.testsfailed
     yield
@@ -121,7 +122,18 @@ def _catch_qt_leaks(request: FixtureRequest, qapp: QApplication) -> Iterator[Non
     except (ImportError, RuntimeError):
         pass
 
-    # This is a known widget that is not cleaned up properly
+    # Rendercanvas caches nonfatal errors for postmortem debugging. Their
+    # tracebacks keep the calling test frame (and its widgets) alive, which
+    # must not be mistaken for a widget leak.
+    last_tb = getattr(sys, "last_traceback", None)
+    if last_tb is not None and last_tb.tb_frame.f_globals.get(
+        "__name__", ""
+    ).startswith("rendercanvas."):
+        for attr in ("last_traceback", "last_value", "last_type", "last_exc"):
+            if hasattr(sys, attr):
+                delattr(sys, attr)
+    del last_tb
+    gc.collect()
     remaining = [w for w in qapp.topLevelWidgets() if not isinstance(w, tuple(allow))]
     if len(remaining) > nbefore:
         test_node = request.node

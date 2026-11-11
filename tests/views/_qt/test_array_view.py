@@ -6,7 +6,13 @@ from unittest.mock import Mock
 from pytest import fixture
 from qtpy.QtCore import QEvent, QPoint, QPointF, Qt
 from qtpy.QtGui import QKeyEvent, QWheelEvent
-from qtpy.QtWidgets import QApplication, QStyle, QStyleOptionSlider, QWidget
+from qtpy.QtWidgets import (
+    QApplication,
+    QStyle,
+    QStyleFactory,
+    QStyleOptionSlider,
+    QWidget,
+)
 
 from ndv._types import KeyCode, KeyMod, KeyPressEvent
 from ndv.models._viewer_model import ArrayViewerModel
@@ -248,3 +254,24 @@ def test_key_event_filter(qtbot: QtBot) -> None:
 
     # Cleanup
     disconnect()
+
+
+def test_dimension_slider_click_jumps_to_position(
+    viewer: QtArrayView, qtbot: QtBot
+) -> None:
+    labeled = viewer._qwidget.dims_sliders._sliders[0]
+    slider = labeled._slider
+    # Fusion page-steps on groove clicks (the native macOS style does not).
+    fusion = QStyleFactory.create("Fusion")
+    fusion.setParent(slider)
+    slider.setStyle(fusion)
+    slider.setFixedWidth(300)
+    viewer._qwidget.show()
+    qtbot.wait(0)
+
+    # Ten positions -> 30px segments; click the middle of the 8th one.
+    y = slider.height() // 2
+    qtbot.mouseClick(slider, Qt.MouseButton.LeftButton, pos=QPoint(7 * 30 + 15, y))
+    assert labeled.value() == 7
+    qtbot.mouseClick(slider, Qt.MouseButton.LeftButton, pos=QPoint(15, y))
+    assert labeled.value() == 0

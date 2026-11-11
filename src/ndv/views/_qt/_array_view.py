@@ -26,6 +26,8 @@ from qtpy.QtWidgets import (
     QSlider,
     QSpacerItem,
     QSplitter,
+    QStyle,
+    QStyleOptionSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -208,6 +210,27 @@ class _QDimensionSlider(QSlider):
     def resizeEvent(self, event: Any) -> None:
         super().resizeEvent(event)
         self._update_handle_width()
+
+    def mousePressEvent(self, event: QMouseEvent | None) -> None:
+        # Jump to the clicked position instead of page-stepping toward it.
+        if event is not None and event.button() == Qt.MouseButton.LeftButton:
+            opt = QStyleOptionSlider()
+            self.initStyleOption(opt)
+            style = cast("QStyle", self.style())
+            cc, sc = QStyle.ComplexControl.CC_Slider, QStyle.SubControl
+            handle = style.subControlRect(cc, opt, sc.SC_SliderHandle, self)
+            pos = event.position().toPoint()
+            if not handle.contains(pos):
+                groove = style.subControlRect(cc, opt, sc.SC_SliderGroove, self)
+                self.setValue(
+                    QStyle.sliderValueFromPosition(
+                        self.minimum(),
+                        self.maximum(),
+                        pos.x() - groove.x() - handle.width() // 2,
+                        groove.width() - handle.width(),
+                    )
+                )
+        super().mousePressEvent(event)
 
     def wheelEvent(self, event: QWheelEvent | None) -> None:
         if event is None:  # pragma: no cover - Qt never sends a null event

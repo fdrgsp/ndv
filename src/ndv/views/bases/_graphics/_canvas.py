@@ -140,5 +140,8 @@ class SharedHistogramCanvas(GraphicsCanvas):
     def set_log_base(self, base: float | None) -> None:
         """Set logarithmic scale base, or None for linear."""
 
+    def reset_range(self) -> None:
+        """Fit the range to the next channel data, as for the first data."""
+
     def highlight(self, channel_values: dict[object, float]) -> None:
         """Highlight domain values across channels."""

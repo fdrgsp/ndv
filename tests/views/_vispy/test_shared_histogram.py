@@ -111,6 +111,18 @@ def test_channel_visibility(hist: VispySharedHistogramCanvas) -> None:
 
 
 @pytest.mark.usefixtures("any_app")
+def test_reset_range_fits_next_data(hist: VispySharedHistogramCanvas) -> None:
+    """E.g. 16-bit mono data replaced by 8-bit RGB data."""
+    hist.set_channel_data(0, np.ones(4), np.linspace(0, 65535, 5))
+    hist.reset_range()
+    hist.set_channel_visible(0, False)
+    hist.set_channel_data("RGB", np.ones(4), np.linspace(0, 255, 5))
+    x_range = hist._visible_x_range()
+    assert x_range is not None
+    assert x_range[1] < 1000
+
+
+@pytest.mark.usefixtures("any_app")
 def test_none_key_channel() -> None:
     """key=None (grayscale default channel) works correctly."""
     hist = VispySharedHistogramCanvas()

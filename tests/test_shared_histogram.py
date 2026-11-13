@@ -158,6 +158,18 @@ def test_channel_data_flows_to_shared_histogram() -> None:
 
 @no_type_check
 @_patch_views
+def test_new_data_resets_shared_histogram_range() -> None:
+    """Replacing the data (e.g. RGB frames by mono ones) refits the histogram."""
+    ctrl = _make_ctrl_with_data()
+    ctrl._add_shared_histogram()
+    mock_hist = ctrl._shared_histogram
+    mock_hist.reset_range.assert_not_called()
+    ctrl.data = np.zeros((10, 10), dtype=np.uint16)
+    mock_hist.reset_range.assert_called_once()
+
+
+@no_type_check
+@_patch_views
 def test_initial_state_set_on_connection() -> None:
     """Color, visibility, gamma, and name are set when channel connects."""
     ctrl = _make_ctrl_with_data()

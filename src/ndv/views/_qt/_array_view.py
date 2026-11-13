@@ -613,6 +613,9 @@ class _QDimsSliders(QWidget):
 
     def create_sliders(self, coords: Mapping[Hashable, Sequence]) -> None:
         """Update sliders with the given coordinate ranges."""
+        # e.g. RGB (y, x, 3) data replaced by mono (y, x): drop the stale axes
+        for axis in self._sliders.keys() - coords.keys():
+            self._remove_slider(axis)
         grid = self._layout
         for axis, _coords in coords.items():
             # Create a slider for axis if necessary
@@ -646,6 +649,19 @@ class _QDimsSliders(QWidget):
             self.setRowTotal(sld, stop - start + 1)
 
         self.currentIndexChanged.emit()
+
+    def _remove_slider(self, axis: Hashable) -> None:
+        slider = self._sliders.pop(axis)
+        if (row := self._getSliderRow(slider)) is not None:
+            for col in range(self._layout.columnCount()):
+                if (item := self._layout.itemAtPosition(row, col)) and (
+                    widget := item.widget()
+                ):
+                    self._layout.removeWidget(widget)
+                    widget.deleteLater()
+        for dim_row in self.findChildren(DimRow):
+            if dim_row.slider is slider:
+                dim_row.deleteLater()
 
     def hide_dimensions(
         self, axes_to_hide: Container[Hashable], show_remainder: bool = True

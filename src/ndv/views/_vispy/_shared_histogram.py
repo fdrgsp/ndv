@@ -221,6 +221,9 @@ class VispySharedHistogramCanvas(SharedHistogramCanvas):
             count_axis.axis.ticker = Ticker(count_axis.axis)
         self._auto_range_y_only()
 
+    def reset_range(self) -> None:
+        self._has_initial_range = False
+
     def set_clim_bounds(self, bounds: tuple[float | None, float | None]) -> None:
         self._clim_bounds = bounds
         self.plot.camera.xbounds = bounds

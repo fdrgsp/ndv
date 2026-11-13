@@ -289,6 +289,9 @@ class PyGFXSharedHistogramCanvas(SharedHistogramCanvas):
             return
         ch.name = name
 
+    def reset_range(self) -> None:
+        self._has_initial_range = False
+
     def set_clim_bounds(self, bounds: tuple[float | None, float | None]) -> None:
         self._clim_bounds = bounds
         self._camera.xbounds = bounds

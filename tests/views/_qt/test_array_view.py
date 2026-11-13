@@ -220,6 +220,18 @@ def test_dimension_slider_one_based_nonzero_range(qtbot: QtBot) -> None:
     assert row.slider.value() == 7
 
 
+def test_create_sliders_removes_stale_axes(viewer: QtArrayView) -> None:
+    # e.g. RGB (t, y, x, 3) data replaced by mono (t, y, x)
+    dims = viewer._qwidget.dims_sliders
+    stale = dims._sliders[2]
+    viewer.create_sliders({0: range(10), 1: range(64)})
+
+    assert set(dims._sliders) == {0, 1}
+    assert dims._getSliderRow(stale) is None
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert [row.label.text() for row in dims.findChildren(DimRow)] == ["0", "1"]
+
+
 def test_key_event_filter(qtbot: QtBot) -> None:
     app = QtAppWrap()
     view = QtArrayView(QWidget(), ArrayViewerModel())

@@ -652,6 +652,8 @@ class ArrayViewer:
 
         self._focused_slider_axis = None
         self._resolved = EMPTY_STATE
+        if self._shared_histogram is not None:
+            self._shared_histogram.reset_range()
         if self._data_wrapper is not None:
             with self._view.currentIndexChanged.blocked():
                 self._view.create_sliders(self._data_wrapper.coords)
